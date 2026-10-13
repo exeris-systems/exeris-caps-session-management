@@ -42,11 +42,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @CapabilityModule
 @CapabilityLifecycle
-@Provides(service = SessionStore.class, version = "2.0.0")
-@Provides(service = RefreshTokenRotation.class, version = "2.0.0")
+@Provides(service = SessionStore.class, version = "0.1.0")
+@Provides(service = RefreshTokenRotation.class, version = "0.1.0")
 @Requires(service = TransactionalExecutor.class, optional = true)
-@Requires(service = AuditLogSink.class, versionRange = "[1.0.0,2.0.0)", optional = true)
-@Requires(service = AccessTokenIssuer.class, versionRange = "[1.0.0,2.0.0)", optional = true)
+@Requires(service = AuditLogSink.class, versionRange = "[0.1.0,0.2.0)", optional = true)
+@Requires(service = AccessTokenIssuer.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 public final class SessionManagementModule implements CapabilityLifecycleHooks {
 
     /**

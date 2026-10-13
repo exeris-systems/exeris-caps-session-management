@@ -8,7 +8,7 @@ Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API
 
 - **Layer:** Layer 5 — Domain primitive (identity), in the Tier 2 capability map of [`high-level-architecture.md`](https://github.com/exeris-systems/exeris-docs/blob/main/high-level-architecture.md) §3.2.
 - **Depends on:** `exeris-kernel-spi`, `exeris-sdk-composition-lifecycle` and `exeris-caps-audit-trail`.
-- **Provides** (`@Provides`, all version 2.0.0): `SessionStore`, `RefreshTokenRotation`.
+- **Provides** (`@Provides`, all version 0.1.0): `SessionStore`, `RefreshTokenRotation`.
 - **Requires** (`@Requires`, each declared `optional = true`): `eu.exeris.kernel.spi.persistence.TransactionalExecutor`, `eu.exeris.caps.audittrail.api.AuditLogSink`, `eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer`.
 - **Wall (ADR-055):** `eu.exeris.caps.sessionmanagement.api` is the cross-cap surface; `eu.exeris.caps.sessionmanagement.internal` is private, and a sibling cap reaching into it fails the build. No Spring, servlet, Netty or reactive type may appear (ADR-006).
 
