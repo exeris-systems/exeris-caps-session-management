@@ -34,6 +34,8 @@ import java.util.UUID;
  */
 public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
 
+    private static final System.Logger LOG = System.getLogger(DefaultRefreshTokenRotation.class.getName());
+
     private final SessionRepository repository;
     private final SessionPolicy policy;
     private final AccessTokenIssuer accessTokenIssuer;
@@ -92,9 +94,7 @@ public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
                     auditBridge.emitTokenRotated(session.id(), session.subjectId(), metadata);
                 }
                 Instant expiresAt = session.tokenExpiry(now, policy.idleTimeout());
-                IssuedAccessToken accessToken = accessTokenIssuer != null
-                        ? accessTokenIssuer.issueAccessToken(session.subjectId(), session.id())
-                        : null;
+                IssuedAccessToken accessToken = issueAccessTokenAfterCommit(session.subjectId(), session.id());
                 yield new RotationOutcome.Rotated(
                         session.subjectId(),
                         session.id(),
@@ -107,8 +107,35 @@ public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
                 }
                 yield new RotationOutcome.ReuseDetected(sessionId);
             }
+            case RotationExecutionResult.ReplayRejected(var reason, var sessionId, var subjectId) -> {
+                if (auditBridge != null) {
+                    auditBridge.emitTokenReplayDetected(sessionId, subjectId, presentedHash);
+                }
+                yield new RotationOutcome.Rejected(reason);
+            }
             case RotationExecutionResult.Rejected(var reason) -> new RotationOutcome.Rejected(reason);
         };
+    }
+
+    /**
+     * Issues the access token once the rotation has committed. The presented token is consumed and its
+     * successor stored by then, so a failing issuer must not hide the successor from the caller: the
+     * caller's retry would present a consumed token and be treated as a replay. The failure is logged and
+     * the rotation reports no access token; the caller refreshes again with the successor to obtain one.
+     * The token is not issued before the commit because that would sign a token for a rotation that may
+     * still be refused or lose the race.
+     */
+    private IssuedAccessToken issueAccessTokenAfterCommit(UUID subjectId, UUID sessionId) {
+        if (accessTokenIssuer == null) {
+            return null;
+        }
+        try {
+            return accessTokenIssuer.issueAccessToken(subjectId, sessionId);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.ERROR,
+                    "access token was not issued for session " + sessionId + "; the refresh token was rotated", e);
+            return null;
+        }
     }
 
     @Override

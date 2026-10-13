@@ -27,6 +27,20 @@ public sealed interface RotationExecutionResult {
         }
     }
 
+    /**
+     * A token that had already been consumed was presented to a session that has since gone idle or
+     * expired. It is refused like any token of an ended session and nothing is written, but the
+     * presentation is a replay and is reported as one.
+     */
+    record ReplayRejected(RotationOutcome.Reason reason, UUID sessionId, UUID subjectId)
+            implements RotationExecutionResult {
+        public ReplayRejected {
+            Objects.requireNonNull(reason, "reason must not be null");
+            Objects.requireNonNull(sessionId, "sessionId must not be null");
+            Objects.requireNonNull(subjectId, "subjectId must not be null");
+        }
+    }
+
     /** The presented token was refused and nothing was written. */
     record Rejected(RotationOutcome.Reason reason) implements RotationExecutionResult {
         public Rejected {

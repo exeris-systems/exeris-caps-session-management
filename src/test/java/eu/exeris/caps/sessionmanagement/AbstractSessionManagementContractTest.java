@@ -18,6 +18,7 @@ import eu.exeris.caps.sessionmanagement.api.exception.SessionExpiredException;
 import eu.exeris.caps.sessionmanagement.api.exception.SessionNotFoundException;
 import eu.exeris.caps.sessionmanagement.internal.audit.SessionAuditBridge;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRepository;
+import eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -36,6 +37,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,6 +56,7 @@ abstract class AbstractSessionManagementContractTest {
     List<AuditEvent> auditEvents;
     SessionStore store;
     RefreshTokenRotation rotation;
+    final AtomicBoolean issuerFails = new AtomicBoolean();
 
     /** A repository with no rows, fresh for each test. */
     protected abstract SessionRepository newRepository();
@@ -67,8 +70,16 @@ abstract class AbstractSessionManagementContractTest {
             @Override public List<AuditEvent> query(AuditQuery query) { return List.copyOf(auditEvents); }
             @Override public long count(AuditQuery query) { return auditEvents.size(); }
         };
+        issuerFails.set(false);
+        InMemoryAccessTokenIssuer delegate = new InMemoryAccessTokenIssuer();
+        AccessTokenIssuer issuer = (subjectId, sessionId) -> {
+            if (issuerFails.get()) {
+                throw new IllegalStateException("signing key unavailable");
+            }
+            return delegate.issueAccessToken(subjectId, sessionId);
+        };
         SessionManagementModule module = new SessionManagementModule(
-                newRepository(), POLICY, new InMemoryAccessTokenIssuer(), new SessionAuditBridge(sink), clock);
+                newRepository(), POLICY, issuer, new SessionAuditBridge(sink), clock);
         store = module.sessionStore();
         rotation = module.refreshTokenRotation();
     }
@@ -126,6 +137,36 @@ abstract class AbstractSessionManagementContractTest {
             assertThat(again).isEqualTo(new RotationOutcome.ReuseDetected(in.session().id()));
             assertRejected(rotation.rotate(first.refreshToken().rawToken(), ClientMetadata.empty()), Reason.SESSION_REVOKED);
             assertThat(store.listSessions(in.principal())).isEmpty();
+            assertThat(auditEvents).extracting(AuditEvent::action).contains("TOKEN_REPLAY_DETECTED");
+        }
+
+        @Test
+        @DisplayName("an access token issuer that fails after the commit still hands the caller the successor")
+        void issuerFailureKeepsTheSuccessor() {
+            SignIn in = signIn();
+            issuerFails.set(true);
+
+            RotationOutcome.Rotated first = rotated(rotation.rotate(in.token().rawToken(), ClientMetadata.empty()));
+
+            assertThat(first.findAccessToken()).isEmpty();
+            assertThat(first.refreshToken().rawToken()).isNotEqualTo(in.token().rawToken());
+
+            issuerFails.set(false);
+            RotationOutcome.Rotated second = rotated(rotation.rotate(first.refreshToken().rawToken(), ClientMetadata.empty()));
+            assertThat(second.findAccessToken()).isPresent();
+
+            assertThat(rotation.rotate(in.token().rawToken(), ClientMetadata.empty()))
+                    .isEqualTo(new RotationOutcome.ReuseDetected(in.session().id()));
+        }
+
+        @Test
+        @DisplayName("presenting a consumed token after the session went idle is refused and reported as a replay")
+        void replayAgainstAnIdleSessionIsAudited() {
+            SignIn in = signIn();
+            rotated(rotation.rotate(in.token().rawToken(), ClientMetadata.empty()));
+            clock.advance(IDLE);
+
+            assertRejected(rotation.rotate(in.token().rawToken(), ClientMetadata.empty()), Reason.SESSION_IDLE);
             assertThat(auditEvents).extracting(AuditEvent::action).contains("TOKEN_REPLAY_DETECTED");
         }
 

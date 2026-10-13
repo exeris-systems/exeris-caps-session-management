@@ -92,6 +92,12 @@ final class InMemorySessionRepository implements SessionRepository {
         return IssueResult.issued(expiresAt);
     }
 
+    private static RotationExecutionResult endedByTime(SessionRecord s, RefreshTokenRecord token, Reason reason) {
+        return token.isConsumed()
+                ? new RotationExecutionResult.ReplayRejected(reason, s.id(), s.subjectId())
+                : new RotationExecutionResult.Rejected(reason);
+    }
+
     @Override
     public synchronized RotationExecutionResult rotate(
             String presentedHash, UUID newTokenId, String newTokenHash, ClientMetadata metadata, Instant now, Duration idleTimeout) {
@@ -104,10 +110,10 @@ final class InMemorySessionRepository implements SessionRepository {
             return new RotationExecutionResult.Rejected(Reason.SESSION_REVOKED);
         }
         if (s.isExpired(now)) {
-            return new RotationExecutionResult.Rejected(Reason.SESSION_EXPIRED);
+            return endedByTime(s, token, Reason.SESSION_EXPIRED);
         }
         if (s.isIdle(now.minus(idleTimeout))) {
-            return new RotationExecutionResult.Rejected(Reason.SESSION_IDLE);
+            return endedByTime(s, token, Reason.SESSION_IDLE);
         }
         if (token.isConsumed()) {
             revokeFamily(s.id(), now);

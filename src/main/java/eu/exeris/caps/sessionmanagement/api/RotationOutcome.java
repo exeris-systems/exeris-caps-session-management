@@ -22,6 +22,9 @@ public sealed interface RotationOutcome {
      * @param sessionId    the session
      * @param refreshToken the successor refresh token
      * @param accessToken  a fresh access token, or {@code null} when no {@code AccessTokenIssuer} is wired
+     *                     or the issuer failed after the rotation committed. A missing access token never
+     *                     undoes the rotation: the client keeps {@code refreshToken} and refreshes again
+     *                     with it to obtain an access token.
      */
     record Rotated(
             UUID subjectId,

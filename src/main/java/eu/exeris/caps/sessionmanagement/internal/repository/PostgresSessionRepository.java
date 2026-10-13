@@ -199,6 +199,12 @@ public final class PostgresSessionRepository implements SessionRepository {
         return result.get();
     }
 
+    private static RotationExecutionResult endedByTime(SessionRecord session, boolean tokenConsumed, Reason reason) {
+        return tokenConsumed
+                ? new RotationExecutionResult.ReplayRejected(reason, session.id(), session.subjectId())
+                : new RotationExecutionResult.Rejected(reason);
+    }
+
     private static RotationExecutionResult rotateInTransaction(
             PersistenceConnection conn,
             String presentedHash,
@@ -211,9 +217,10 @@ public final class PostgresSessionRepository implements SessionRepository {
         // 1. Lock the family: the session row the presented token belongs to.
         UUID tokenId;
         SessionRecord session;
+        boolean tokenConsumed;
         try (PersistenceStatement stmt = conn.prepare(
                 "SELECT t.id, s.id, s.subject_id, s.created_at, s.expires_at, s.last_active_at, s.revoked_at, "
-                        + "s.user_agent, s.ip_address "
+                        + "s.user_agent, s.ip_address, t.consumed_at IS NOT NULL "
                         + "FROM refresh_tokens t JOIN sessions s ON s.id = t.session_id "
                         + "WHERE t.token_hash = $1 FOR UPDATE OF s")) {
             stmt.bindString(0, presentedHash);
@@ -232,6 +239,7 @@ public final class PostgresSessionRepository implements SessionRepository {
                         row.isNull(6) ? null : row.getInstant(6),
                         row.getString(7),
                         row.getString(8));
+                tokenConsumed = row.getBoolean(9);
             }
         }
 
@@ -239,11 +247,13 @@ public final class PostgresSessionRepository implements SessionRepository {
         if (session.isRevoked()) {
             return new RotationExecutionResult.Rejected(Reason.SESSION_REVOKED);
         }
+        // A revoked session is the ordinary aftermath of a detected reuse or a sign-out and is not reported
+        // again; a consumed token presented to a session that merely ended by time is still a replay.
         if (session.isExpired(now)) {
-            return new RotationExecutionResult.Rejected(Reason.SESSION_EXPIRED);
+            return endedByTime(session, tokenConsumed, Reason.SESSION_EXPIRED);
         }
         if (session.isIdle(now.minus(idleTimeout))) {
-            return new RotationExecutionResult.Rejected(Reason.SESSION_IDLE);
+            return endedByTime(session, tokenConsumed, Reason.SESSION_IDLE);
         }
 
         // 3. Consume: the single conditional write that decides which presentation wins.
