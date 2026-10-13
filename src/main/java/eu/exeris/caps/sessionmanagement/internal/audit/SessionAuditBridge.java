@@ -11,7 +11,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Bridge for emitting security and compliance events to {@link AuditLogSink} when present.
+ * Bridge for emitting security and compliance events to {@link AuditLogSink} when present. A sink that
+ * throws is logged and never propagates to the caller.
  *
  * <p>Emits actions:
  * <ul>
@@ -25,6 +26,8 @@ import java.util.UUID;
  * @since 0.1.0
  */
 public final class SessionAuditBridge {
+
+    private static final System.Logger LOG = System.getLogger(SessionAuditBridge.class.getName());
 
     private final AuditLogSink sink;
 
@@ -81,7 +84,22 @@ public final class SessionAuditBridge {
         emit("TOKEN_REPLAY_DETECTED", sessionId, subjectId, details);
     }
 
+    /**
+     * Hands one event to the sink. {@link AuditLogSink#emit} does not promise to be non-throwing, and every
+     * event here is emitted after the state change it describes has committed, so a failing sink must not
+     * turn a committed operation into a failed one: a rotation whose caller never receives its successor
+     * token leaves the caller to replay the consumed one, which revokes the session. A sink failure is
+     * logged and the operation proceeds.
+     */
     private void emit(String action, UUID sessionId, UUID subjectId, Map<String, Object> details) {
+        try {
+            send(action, sessionId, subjectId, details);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.ERROR, "audit event " + action + " was not recorded", e);
+        }
+    }
+
+    private void send(String action, UUID sessionId, UUID subjectId, Map<String, Object> details) {
         String resId = sessionId != null ? sessionId.toString() : (subjectId != null ? subjectId.toString() : "");
         String actorId = subjectId != null ? subjectId.toString() : "system";
         sink.emit(AuditEvent.builder()

@@ -31,6 +31,7 @@ import java.util.UUID;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Binds the session-management contract to live PostgreSQL, applying {@link SessionManagementModule#MIGRATIONS}. Each unit of work
@@ -61,6 +62,22 @@ class PostgresSessionManagementIT extends AbstractSessionManagementContractTest 
             throw new IllegalStateException(e);
         }
         return new PostgresSessionRepository(new PerCallTransactionalExecutor());
+    }
+
+    @Test
+    @DisplayName("V1 refuses a sessions table that still has transition_until, and applies again over its own schema")
+    void migrationGuardsAgainstPreReleaseLayout() throws SQLException {
+        String v1 = readResource(SessionManagementModule.MIGRATIONS.get(0));
+        try (Connection c = open(); Statement stmt = c.createStatement()) {
+            stmt.execute("CREATE SCHEMA legacy");
+            stmt.execute("SET search_path TO legacy");
+            stmt.execute("CREATE TABLE sessions (id UUID PRIMARY KEY, transition_until TIMESTAMPTZ)");
+            assertThatThrownBy(() -> stmt.execute(v1))
+                    .hasMessageContaining("transition_until");
+            stmt.execute("DROP SCHEMA legacy CASCADE");
+            stmt.execute("SET search_path TO public");
+            stmt.execute(v1);
+        }
     }
 
     @Test
