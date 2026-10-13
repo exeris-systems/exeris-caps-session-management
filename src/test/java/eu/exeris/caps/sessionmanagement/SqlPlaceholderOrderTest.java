@@ -35,8 +35,7 @@ class SqlPlaceholderOrderTest {
     void preparedStatementsUseAscendingSingleUsePlaceholders() throws IOException {
         List<String> statements = preparedStatements(Files.readString(REPOSITORY_SOURCE));
 
-        assertThat(statements).hasSizeGreaterThanOrEqualTo(10);
-        assertThat(statements).allSatisfy(sql ->
+        assertThat(statements).hasSizeGreaterThanOrEqualTo(10).allSatisfy(sql ->
                 assertThat(placeholders(sql)).as(sql).isEqualTo(ascendingFromOne(placeholders(sql).size())));
     }
 

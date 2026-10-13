@@ -42,6 +42,7 @@ class SessionPrincipalTest {
         assertThat(SessionPrincipal.class.getConstructors()).isEmpty();
         assertThat(Arrays.stream(SessionPrincipal.class.getDeclaredMethods())
                 .filter(m -> Modifier.isStatic(m.getModifiers()) && Modifier.isPublic(m.getModifiers())))
+                .isNotEmpty()
                 .allSatisfy(m -> assertThat(m.getParameterCount()).isZero());
     }
 }

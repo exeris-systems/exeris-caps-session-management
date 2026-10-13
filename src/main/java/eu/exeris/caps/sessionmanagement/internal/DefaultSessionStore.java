@@ -25,6 +25,8 @@ import java.util.UUID;
  */
 public final class DefaultSessionStore implements SessionStore {
 
+    private static final String PRINCIPAL_REQUIRED = "principal must not be null";
+
     private final SessionRepository repository;
     private final SessionPolicy policy;
     private final SessionAuditBridge auditBridge;
@@ -43,7 +45,7 @@ public final class DefaultSessionStore implements SessionStore {
         ClientMetadata meta = metadata != null ? metadata : ClientMetadata.empty();
         Instant now = clock.instant();
 
-        SessionRecord record = new SessionRecord(
+        SessionRecord sessionRecord = new SessionRecord(
                 UUID.randomUUID(),
                 subjectId,
                 now,
@@ -53,20 +55,20 @@ public final class DefaultSessionStore implements SessionStore {
                 meta.userAgent(),
                 meta.ipAddress()
         );
-        List<UUID> evicted = repository.createSession(record, policy.maxActiveSessionsPerSubject(), policy.idleTimeout());
+        List<UUID> evicted = repository.createSession(sessionRecord, policy.maxActiveSessionsPerSubject(), policy.idleTimeout());
 
         if (auditBridge != null) {
             for (UUID victim : evicted) {
                 auditBridge.emitSessionRevoked(victim, subjectId, RevocationReason.EVICTED);
             }
-            auditBridge.emitSessionCreated(record.id(), subjectId, meta, record.expiresAt());
+            auditBridge.emitSessionCreated(sessionRecord.id(), subjectId, meta, sessionRecord.expiresAt());
         }
-        return record.toDomain();
+        return sessionRecord.toDomain();
     }
 
     @Override
     public List<SessionInfo> listSessions(SessionPrincipal principal) {
-        Objects.requireNonNull(principal, "principal must not be null");
+        Objects.requireNonNull(principal, PRINCIPAL_REQUIRED);
         UUID current = principal.sessionId().orElse(null);
         return repository.findActiveSessions(principal.subjectId(), clock.instant(), policy.idleTimeout()).stream()
                 .map(r -> SessionInfo.from(r.toDomain(), policy, r.id().equals(current)))
@@ -75,20 +77,20 @@ public final class DefaultSessionStore implements SessionStore {
 
     @Override
     public boolean revokeSession(SessionPrincipal principal, UUID sessionId) {
-        Objects.requireNonNull(principal, "principal must not be null");
+        Objects.requireNonNull(principal, PRINCIPAL_REQUIRED);
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         return revokeOwned(principal.subjectId(), sessionId, RevocationReason.REVOKED_BY_SUBJECT);
     }
 
     @Override
     public int revokeAllSessions(SessionPrincipal principal) {
-        Objects.requireNonNull(principal, "principal must not be null");
+        Objects.requireNonNull(principal, PRINCIPAL_REQUIRED);
         return revokeAll(principal.subjectId(), RevocationReason.REVOKED_ALL_BY_SUBJECT);
     }
 
     @Override
     public boolean logout(SessionPrincipal principal) {
-        Objects.requireNonNull(principal, "principal must not be null");
+        Objects.requireNonNull(principal, PRINCIPAL_REQUIRED);
         UUID sessionId = principal.sessionId().orElseThrow(() -> new IllegalStateException(
                 "the authenticated principal carries no session identifier; logout needs a SessionBoundPrincipal"));
         return revokeOwned(principal.subjectId(), sessionId, RevocationReason.LOGOUT);

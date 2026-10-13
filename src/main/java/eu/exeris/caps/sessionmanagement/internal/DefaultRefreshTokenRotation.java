@@ -87,8 +87,7 @@ public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
                 presentedHash, UUID.randomUUID(), successor.tokenHash(), metadata, now, policy.idleTimeout());
 
         return switch (result) {
-            case RotationExecutionResult.Rotated rotated -> {
-                var session = rotated.session();
+            case RotationExecutionResult.Rotated(var session) -> {
                 if (auditBridge != null) {
                     auditBridge.emitTokenRotated(session.id(), session.subjectId(), metadata);
                 }
@@ -102,13 +101,13 @@ public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
                         new IssuedRefreshToken(successor.rawToken(), expiresAt, session.id()),
                         accessToken);
             }
-            case RotationExecutionResult.ReuseDetected reuse -> {
+            case RotationExecutionResult.ReuseDetected(var sessionId, var subjectId) -> {
                 if (auditBridge != null) {
-                    auditBridge.emitTokenReplayDetected(reuse.sessionId(), reuse.subjectId(), presentedHash);
+                    auditBridge.emitTokenReplayDetected(sessionId, subjectId, presentedHash);
                 }
-                yield new RotationOutcome.ReuseDetected(reuse.sessionId());
+                yield new RotationOutcome.ReuseDetected(sessionId);
             }
-            case RotationExecutionResult.Rejected rejected -> new RotationOutcome.Rejected(rejected.reason());
+            case RotationExecutionResult.Rejected(var reason) -> new RotationOutcome.Rejected(reason);
         };
     }
 

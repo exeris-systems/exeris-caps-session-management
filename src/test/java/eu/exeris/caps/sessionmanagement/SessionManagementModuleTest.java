@@ -33,7 +33,8 @@ class SessionManagementModuleTest {
     @Test
     @DisplayName("a TransactionalExecutor is required by the public constructors")
     void transactionalExecutorIsRequired() {
-        assertThatThrownBy(() -> new SessionManagementModule(null, SessionPolicy.defaults(), null, null))
+        SessionPolicy policy = SessionPolicy.defaults();
+        assertThatThrownBy(() -> new SessionManagementModule(null, policy, null, null))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -78,9 +79,11 @@ class SessionManagementModuleTest {
         SessionPolicy policy = SessionPolicy.defaults();
         assertThat(policy.idleTimeout()).isEqualTo(Duration.ofHours(12));
         assertThat(policy.absoluteLifetime()).isEqualTo(Duration.ofDays(7));
-        assertThatThrownBy(() -> new SessionPolicy(Duration.ofHours(1), Duration.ofHours(2), 1))
+        Duration oneHour = Duration.ofHours(1);
+        Duration twoHours = Duration.ofHours(2);
+        assertThatThrownBy(() -> new SessionPolicy(oneHour, twoHours, 1))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new SessionPolicy(Duration.ofHours(1), Duration.ZERO, 1))
+        assertThatThrownBy(() -> new SessionPolicy(oneHour, Duration.ZERO, 1))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

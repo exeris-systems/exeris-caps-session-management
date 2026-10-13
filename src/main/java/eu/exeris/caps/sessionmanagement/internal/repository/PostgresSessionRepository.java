@@ -33,6 +33,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class PostgresSessionRepository implements SessionRepository {
 
+    private static final String SUBJECT_REQUIRED = "subjectId must not be null";
+
     private static final String SESSION_COLUMNS =
             "id, subject_id, created_at, expires_at, last_active_at, revoked_at, user_agent, ip_address";
 
@@ -84,7 +86,7 @@ public final class PostgresSessionRepository implements SessionRepository {
 
     @Override
     public List<SessionRecord> findActiveSessions(UUID subjectId, Instant now, Duration idleTimeout) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
+        Objects.requireNonNull(subjectId, SUBJECT_REQUIRED);
         return tx.query(conn -> {
             try (PersistenceStatement stmt = conn.prepare(
                     "SELECT " + SESSION_COLUMNS + " FROM sessions "
@@ -104,7 +106,7 @@ public final class PostgresSessionRepository implements SessionRepository {
 
     @Override
     public boolean revokeSession(UUID subjectId, UUID sessionId, Instant now, RevocationReason reason) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
+        Objects.requireNonNull(subjectId, SUBJECT_REQUIRED);
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         AtomicInteger revoked = new AtomicInteger();
         tx.executeManaged(conn -> {
@@ -125,7 +127,7 @@ public final class PostgresSessionRepository implements SessionRepository {
 
     @Override
     public int revokeAllSessions(UUID subjectId, Instant now, RevocationReason reason) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
+        Objects.requireNonNull(subjectId, SUBJECT_REQUIRED);
         AtomicInteger revoked = new AtomicInteger();
         tx.executeManaged(conn -> {
             try (PersistenceStatement stmt = conn.prepare(
@@ -146,7 +148,7 @@ public final class PostgresSessionRepository implements SessionRepository {
 
     @Override
     public IssueResult issueFirstToken(UUID subjectId, RefreshTokenRecord token, Instant now, Duration idleTimeout) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
+        Objects.requireNonNull(subjectId, SUBJECT_REQUIRED);
         Objects.requireNonNull(token, "token must not be null");
         AtomicReference<IssueResult> result = new AtomicReference<>();
         tx.executeManaged(conn -> {

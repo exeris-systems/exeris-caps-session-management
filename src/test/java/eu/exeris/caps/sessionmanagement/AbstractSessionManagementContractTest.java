@@ -186,11 +186,13 @@ abstract class AbstractSessionManagementContractTest {
         @DisplayName("a session's first token is issued once, to its own subject only")
         void issueIsOncePerSessionAndOwnerOnly() {
             SignIn in = signIn();
-            assertThatThrownBy(() -> rotation.issue(in.session().id(), in.subjectId()))
+            UUID ownSession = in.session().id();
+            UUID subject = in.subjectId();
+            assertThatThrownBy(() -> rotation.issue(ownSession, subject))
                     .isInstanceOf(SessionException.class);
 
-            Session other = store.createSession(UUID.randomUUID(), ClientMetadata.empty());
-            assertThatThrownBy(() -> rotation.issue(other.id(), in.subjectId()))
+            UUID otherSession = store.createSession(UUID.randomUUID(), ClientMetadata.empty()).id();
+            assertThatThrownBy(() -> rotation.issue(otherSession, subject))
                     .isInstanceOf(SessionNotFoundException.class);
         }
 
@@ -279,9 +281,9 @@ abstract class AbstractSessionManagementContractTest {
         @DisplayName("a first token cannot be issued for an idle session")
         void noIssueForAnIdleSession() {
             UUID subject = UUID.randomUUID();
-            Session session = store.createSession(subject, ClientMetadata.empty());
+            UUID sessionId = store.createSession(subject, ClientMetadata.empty()).id();
             clock.advance(IDLE);
-            assertThatThrownBy(() -> rotation.issue(session.id(), subject)).isInstanceOf(SessionExpiredException.class);
+            assertThatThrownBy(() -> rotation.issue(sessionId, subject)).isInstanceOf(SessionExpiredException.class);
         }
 
         @Test
