@@ -1,43 +1,47 @@
 package eu.exeris.caps.sessionmanagement;
 
-import eu.exeris.caps.audittrail.api.AuditEvent;
-import eu.exeris.caps.audittrail.api.AuditLogSink;
-import eu.exeris.caps.audittrail.api.AuditQuery;
 import eu.exeris.caps.sessionmanagement.api.ClientMetadata;
 import eu.exeris.caps.sessionmanagement.api.IssuedRefreshToken;
-import eu.exeris.caps.sessionmanagement.api.RotationResult;
+import eu.exeris.caps.sessionmanagement.api.RotationOutcome;
 import eu.exeris.caps.sessionmanagement.api.Session;
 import eu.exeris.caps.sessionmanagement.api.SessionPolicy;
-import eu.exeris.caps.sessionmanagement.api.SessionStore;
 import eu.exeris.caps.sessionmanagement.spi.InMemoryAccessTokenIssuer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("SessionManagementModule Lifecycle and Wiring Tests")
+@DisplayName("SessionManagementModule lifecycle and wiring")
 class SessionManagementModuleTest {
 
     @Test
-    @DisplayName("no-arg constructor instantiates valid defaults and provides services")
-    void noArgConstructorInstantiatesDefaults() {
+    @DisplayName("without persistence the module exposes no services and refuses to initialize")
+    void unwiredModuleFailsClosed() {
         SessionManagementModule module = new SessionManagementModule();
 
-        assertThat(module.sessionStore()).isNotNull();
-        assertThat(module.refreshTokenRotation()).isNotNull();
+        assertThat(module.isWired()).isFalse();
+        assertThatThrownBy(module::sessionStore).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(module::refreshTokenRotation).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(module::initialize).isInstanceOf(IllegalStateException.class);
         assertThat(module.isInitialized()).isFalse();
-        assertThat(module.isReady()).isFalse();
     }
 
     @Test
-    @DisplayName("lifecycle transitions through initialize, ready, drain, and terminate")
+    @DisplayName("a TransactionalExecutor is required by the public constructors")
+    void transactionalExecutorIsRequired() {
+        assertThatThrownBy(() -> new SessionManagementModule(null, SessionPolicy.defaults(), null, null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("lifecycle transitions through initialize, ready, drain and terminate")
     void lifecycleTransitions() throws Exception {
-        SessionManagementModule module = new SessionManagementModule();
+        SessionManagementModule module = wired();
 
         module.initialize();
         assertThat(module.isInitialized()).isTrue();
@@ -56,54 +60,34 @@ class SessionManagementModuleTest {
     }
 
     @Test
-    @DisplayName("module wires with custom policy, token issuer, and audit sink")
-    void moduleWiringWithCustomDependencies() {
-        List<AuditEvent> emittedEvents = new ArrayList<>();
-        AuditLogSink auditSink = new AuditLogSink() {
-            @Override public void emit(AuditEvent event) { emittedEvents.add(event); }
-            @Override public List<AuditEvent> query(AuditQuery query) { return emittedEvents; }
-            @Override public long count(AuditQuery query) { return emittedEvents.size(); }
-        };
+    @DisplayName("rotation issues an access token when an AccessTokenIssuer is wired")
+    void rotationIssuesAccessToken() {
+        SessionManagementModule module = wired();
+        UUID subject = UUID.randomUUID();
+        Session session = module.sessionStore().createSession(subject, ClientMetadata.empty());
+        IssuedRefreshToken issued = module.refreshTokenRotation().issue(session.id(), subject);
 
-        SessionPolicy customPolicy = new SessionPolicy(Duration.ofHours(2), Duration.ofDays(1), 3);
-        InMemoryAccessTokenIssuer tokenIssuer = new InMemoryAccessTokenIssuer();
+        RotationOutcome outcome = module.refreshTokenRotation().rotate(issued.rawToken(), ClientMetadata.empty());
 
-        SessionManagementModule module = new SessionManagementModule(
-                (eu.exeris.kernel.spi.persistence.TransactionalExecutor) null,
-                customPolicy,
-                tokenIssuer,
-                auditSink
-        );
-
-        SessionStore store = module.sessionStore();
-        UUID subjectId = UUID.randomUUID();
-        Session session = store.createSession(subjectId, ClientMetadata.of("Mozilla/5.0", "127.0.0.1"));
-        assertThat(session).isNotNull();
-
-        // Audit event emitted
-        assertThat(emittedEvents).hasSize(1);
-        assertThat(emittedEvents.get(0).action()).isEqualTo("SESSION_CREATED");
-
-        // Refresh token rotation with access token issuance
-        IssuedRefreshToken issued = module.refreshTokenRotation().issue(session.id(), subjectId);
-        RotationResult rotated = module.refreshTokenRotation().rotate(issued.rawToken(), ClientMetadata.empty());
-
-        assertThat(rotated.findAccessToken()).isPresent();
-        assertThat(rotated.accessToken().token()).contains("eyTestHeader");
-        assertThat(emittedEvents).hasSize(2);
-        assertThat(emittedEvents.get(1).action()).isEqualTo("TOKEN_ROTATED");
+        assertThat(outcome).isInstanceOfSatisfying(RotationOutcome.Rotated.class,
+                r -> assertThat(r.findAccessToken()).isPresent());
     }
 
     @Test
-    @DisplayName("module wires with convenience constructor using default policy")
-    void moduleWiringWithConvenienceConstructor() {
-        SessionManagementModule module = new SessionManagementModule(
-                (eu.exeris.kernel.spi.persistence.TransactionalExecutor) null,
-                new InMemoryAccessTokenIssuer(),
-                null
-        );
+    @DisplayName("default policy has an idle timeout shorter than the absolute lifetime")
+    void defaultPolicy() {
+        SessionPolicy policy = SessionPolicy.defaults();
+        assertThat(policy.idleTimeout()).isEqualTo(Duration.ofHours(12));
+        assertThat(policy.absoluteLifetime()).isEqualTo(Duration.ofDays(7));
+        assertThatThrownBy(() -> new SessionPolicy(Duration.ofHours(1), Duration.ofHours(2), 1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SessionPolicy(Duration.ofHours(1), Duration.ZERO, 1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-        assertThat(module.sessionStore()).isNotNull();
-        assertThat(module.refreshTokenRotation()).isNotNull();
+    private static SessionManagementModule wired() {
+        return new SessionManagementModule(
+                new InMemorySessionRepository(), SessionPolicy.defaults(), new InMemoryAccessTokenIssuer(), null,
+                Clock.systemUTC());
     }
 }

@@ -1,29 +1,36 @@
 package eu.exeris.caps.sessionmanagement.internal.repository;
 
+import eu.exeris.caps.sessionmanagement.api.RotationOutcome;
+
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Result outcome of an atomic refresh token rotation transaction.
+ * What one rotation transaction did.
  *
  * @since 0.1.0
  */
 public sealed interface RotationExecutionResult {
 
-    record Success(SessionRecord session, RefreshTokenRecord newRefreshToken) implements RotationExecutionResult {}
+    /** The presented token was consumed and its successor stored; {@code session} is the updated row. */
+    record Rotated(SessionRecord session) implements RotationExecutionResult {
+        public Rotated {
+            Objects.requireNonNull(session, "session must not be null");
+        }
+    }
 
-    record ReplayDetected(UUID sessionId, UUID subjectId) implements RotationExecutionResult {}
+    /** The presented token was already consumed; the session and its tokens are now revoked. */
+    record ReuseDetected(UUID sessionId, UUID subjectId) implements RotationExecutionResult {
+        public ReuseDetected {
+            Objects.requireNonNull(sessionId, "sessionId must not be null");
+            Objects.requireNonNull(subjectId, "subjectId must not be null");
+        }
+    }
 
-    record TokenNotFound() implements RotationExecutionResult {}
-
-    record TokenRevoked(UUID sessionId) implements RotationExecutionResult {}
-
-    record TokenExpired(UUID sessionId) implements RotationExecutionResult {}
-
-    record SessionNotFound(UUID sessionId) implements RotationExecutionResult {}
-
-    record SessionRevoked(UUID sessionId) implements RotationExecutionResult {}
-
-    record SessionExpired(UUID sessionId) implements RotationExecutionResult {}
-
-    record GraceWindow(SessionRecord session) implements RotationExecutionResult {}
+    /** The presented token was refused and nothing was written. */
+    record Rejected(RotationOutcome.Reason reason) implements RotationExecutionResult {
+        public Rejected {
+            Objects.requireNonNull(reason, "reason must not be null");
+        }
+    }
 }

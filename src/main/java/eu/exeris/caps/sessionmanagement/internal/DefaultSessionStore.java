@@ -4,20 +4,22 @@ import eu.exeris.caps.sessionmanagement.api.ClientMetadata;
 import eu.exeris.caps.sessionmanagement.api.Session;
 import eu.exeris.caps.sessionmanagement.api.SessionInfo;
 import eu.exeris.caps.sessionmanagement.api.SessionPolicy;
+import eu.exeris.caps.sessionmanagement.api.SessionPrincipal;
 import eu.exeris.caps.sessionmanagement.api.SessionStore;
 import eu.exeris.caps.sessionmanagement.internal.audit.SessionAuditBridge;
+import eu.exeris.caps.sessionmanagement.internal.repository.RevocationReason;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRecord;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRepository;
 
+import java.time.Clock;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Default implementation of {@link SessionStore}.
+ * Default {@link SessionStore}. Every subject-scoped operation passes the principal's subject to the
+ * repository, which puts it in the statement's {@code WHERE} clause.
  *
  * @since 0.1.0
  */
@@ -26,124 +28,91 @@ public final class DefaultSessionStore implements SessionStore {
     private final SessionRepository repository;
     private final SessionPolicy policy;
     private final SessionAuditBridge auditBridge;
+    private final Clock clock;
 
-    public DefaultSessionStore(SessionRepository repository, SessionPolicy policy, SessionAuditBridge auditBridge) {
+    public DefaultSessionStore(SessionRepository repository, SessionPolicy policy, SessionAuditBridge auditBridge, Clock clock) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.policy = Objects.requireNonNull(policy, "policy must not be null");
         this.auditBridge = auditBridge;
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     @Override
     public Session createSession(UUID subjectId, ClientMetadata metadata) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
         ClientMetadata meta = metadata != null ? metadata : ClientMetadata.empty();
-        Instant now = Instant.now();
+        Instant now = clock.instant();
 
-        // Evict oldest sessions if active limit reached
-        List<SessionRecord> active = repository.findActiveSessions(subjectId, now);
-        if (active.size() >= policy.maxActiveSessionsPerSubject()) {
-            List<SessionRecord> sorted = active.stream()
-                    .sorted(Comparator.comparing(SessionRecord::createdAt).thenComparing(SessionRecord::id))
-                    .toList();
-            int toEvict = active.size() - policy.maxActiveSessionsPerSubject() + 1;
-            for (int i = 0; i < toEvict && i < sorted.size(); i++) {
-                SessionRecord oldest = sorted.get(i);
-                repository.revokeSession(oldest.id(), now);
-                if (auditBridge != null) {
-                    auditBridge.emitSessionRevoked(oldest.id(), subjectId);
-                }
-            }
-        }
-
-        UUID sessionId = UUID.randomUUID();
-        Instant expiresAt = now.plus(policy.sessionTtl());
-        SessionRecord sessionRecord = new SessionRecord(
-                sessionId,
+        SessionRecord record = new SessionRecord(
+                UUID.randomUUID(),
                 subjectId,
                 now,
-                expiresAt,
+                now.plus(policy.absoluteLifetime()),
                 now,
                 null,
                 meta.userAgent(),
                 meta.ipAddress()
         );
-        repository.saveSession(sessionRecord);
+        List<UUID> evicted = repository.createSession(record, policy.maxActiveSessionsPerSubject(), policy.idleTimeout());
 
         if (auditBridge != null) {
-            auditBridge.emitSessionCreated(sessionId, subjectId, meta, expiresAt);
+            for (UUID victim : evicted) {
+                auditBridge.emitSessionRevoked(victim, subjectId, RevocationReason.EVICTED);
+            }
+            auditBridge.emitSessionCreated(record.id(), subjectId, meta, record.expiresAt());
         }
-
-        return toDomain(sessionRecord);
+        return record.toDomain();
     }
 
     @Override
-    public List<SessionInfo> listActiveSessions(UUID subjectId) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
-        Instant now = Instant.now();
-        return repository.findActiveSessions(subjectId, now).stream()
-                .map(r -> new SessionInfo(
-                        r.id(),
-                        r.createdAt(),
-                        r.expiresAt(),
-                        r.lastActiveAt(),
-                        r.userAgent(),
-                        r.ipAddress(),
-                        false
-                ))
+    public List<SessionInfo> listSessions(SessionPrincipal principal) {
+        Objects.requireNonNull(principal, "principal must not be null");
+        UUID current = principal.sessionId().orElse(null);
+        return repository.findActiveSessions(principal.subjectId(), clock.instant(), policy.idleTimeout()).stream()
+                .map(r -> SessionInfo.from(r.toDomain(), policy, r.id().equals(current)))
                 .toList();
     }
 
     @Override
-    public Optional<SessionInfo> findSession(UUID sessionId) {
+    public boolean revokeSession(SessionPrincipal principal, UUID sessionId) {
+        Objects.requireNonNull(principal, "principal must not be null");
         Objects.requireNonNull(sessionId, "sessionId must not be null");
-        return repository.findSession(sessionId)
-                .map(r -> new SessionInfo(
-                        r.id(),
-                        r.createdAt(),
-                        r.expiresAt(),
-                        r.lastActiveAt(),
-                        r.userAgent(),
-                        r.ipAddress(),
-                        false
-                ));
+        return revokeOwned(principal.subjectId(), sessionId, RevocationReason.REVOKED_BY_SUBJECT);
     }
 
     @Override
-    public boolean revokeSession(UUID subjectId, UUID sessionId) {
-        Objects.requireNonNull(sessionId, "sessionId must not be null");
-        Instant now = Instant.now();
-        UUID effectiveSubjectId = subjectId;
-        if (effectiveSubjectId == null) {
-            effectiveSubjectId = repository.findSession(sessionId).map(SessionRecord::subjectId).orElse(null);
-        }
-        boolean revoked = repository.revokeSession(subjectId, sessionId, now);
-        if (revoked && auditBridge != null) {
-            auditBridge.emitSessionRevoked(sessionId, effectiveSubjectId);
-        }
-        return revoked;
+    public int revokeAllSessions(SessionPrincipal principal) {
+        Objects.requireNonNull(principal, "principal must not be null");
+        return revokeAll(principal.subjectId(), RevocationReason.REVOKED_ALL_BY_SUBJECT);
+    }
+
+    @Override
+    public boolean logout(SessionPrincipal principal) {
+        Objects.requireNonNull(principal, "principal must not be null");
+        UUID sessionId = principal.sessionId().orElseThrow(() -> new IllegalStateException(
+                "the authenticated principal carries no session identifier; logout needs a SessionBoundPrincipal"));
+        return revokeOwned(principal.subjectId(), sessionId, RevocationReason.LOGOUT);
     }
 
     @Override
     public int revokeAllForSubject(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        Instant now = Instant.now();
-        int count = repository.revokeAllSessionsForSubject(subjectId, now);
-        if (count > 0 && auditBridge != null) {
-            auditBridge.emitSessionsRevokedAll(subjectId, count);
-        }
-        return count;
+        return revokeAll(subjectId, RevocationReason.CREDENTIAL_CHANGED);
     }
 
-    private static Session toDomain(SessionRecord record) {
-        return new Session(
-                record.id(),
-                record.subjectId(),
-                record.createdAt(),
-                record.expiresAt(),
-                record.lastActiveAt(),
-                record.revokedAt(),
-                record.userAgent(),
-                record.ipAddress()
-        );
+    private boolean revokeOwned(UUID subjectId, UUID sessionId, RevocationReason reason) {
+        boolean revoked = repository.revokeSession(subjectId, sessionId, clock.instant(), reason);
+        if (revoked && auditBridge != null) {
+            auditBridge.emitSessionRevoked(sessionId, subjectId, reason);
+        }
+        return revoked;
+    }
+
+    private int revokeAll(UUID subjectId, RevocationReason reason) {
+        int count = repository.revokeAllSessions(subjectId, clock.instant(), reason);
+        if (count > 0 && auditBridge != null) {
+            auditBridge.emitSessionsRevokedAll(subjectId, count, reason);
+        }
+        return count;
     }
 }

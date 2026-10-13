@@ -5,16 +5,17 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Domain representation of an authenticated user session.
+ * One sign-in of a subject. The session is the refresh-token family: every refresh token issued for
+ * it descends from the first by rotation, and revoking the session revokes all of them.
  *
  * @param id           unique session identifier
  * @param subjectId    identity subject identifier
  * @param createdAt    session creation timestamp
- * @param expiresAt    session expiration timestamp
- * @param lastActiveAt timestamp of most recent activity or token rotation
- * @param revokedAt    explicit revocation timestamp, or null if active
- * @param userAgent    user agent string recorded at session creation
- * @param ipAddress    IP address recorded at session creation
+ * @param expiresAt    end of the absolute lifetime
+ * @param lastActiveAt timestamp of the most recent refresh-token rotation, or of creation
+ * @param revokedAt    revocation timestamp, or {@code null} while not revoked
+ * @param userAgent    user agent recorded at creation or at the last rotation
+ * @param ipAddress    IP address recorded at creation or at the last rotation
  * @since 0.1.0
  */
 public record Session(
@@ -37,26 +38,25 @@ public record Session(
     }
 
     /**
-     * Checks whether the session is currently active (not revoked and not expired).
-     *
-     * @param now reference instant
-     * @return true if session is valid and active
+     * Whether the session is neither revoked, past its absolute lifetime, nor idle at {@code now}.
      */
-    public boolean isActive(Instant now) {
-        return revokedAt == null && expiresAt.isAfter(now);
+    public boolean isActive(Instant now, SessionPolicy policy) {
+        return revokedAt == null && expiresAt.isAfter(now) && lastActiveAt.isAfter(policy.idleCutoff(now));
     }
 
     /**
-     * Checks whether the session has been explicitly revoked.
+     * Whether the session has been revoked.
      */
     public boolean isRevoked() {
         return revokedAt != null;
     }
 
     /**
-     * Checks whether the session has expired relative to the given timestamp.
+     * The instant the session becomes idle unless its refresh token is rotated first, capped at the
+     * absolute expiry.
      */
-    public boolean isExpired(Instant now) {
-        return !expiresAt.isAfter(now);
+    public Instant idleExpiresAt(SessionPolicy policy) {
+        Instant idle = lastActiveAt.plus(policy.idleTimeout());
+        return idle.isBefore(expiresAt) ? idle : expiresAt;
     }
 }

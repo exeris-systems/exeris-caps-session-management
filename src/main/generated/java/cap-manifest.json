@@ -3,7 +3,7 @@
   "stamp" : {
     "validated" : true,
     "compositionVersion" : "0.0.0",
-    "contentBinding" : "sha256:d04a70b90e4eb404e580029a0613fa9fdf36bf471063a22178e4a05756345b16"
+    "contentBinding" : "sha256:45cec8a037fdc82782d8b9701d2ca9dde8bf62718c4fe3f5d75b17468f91e29a"
   },
   "modules" : [
     {
@@ -14,11 +14,11 @@
         "provides" : [
           {
             "service" : "eu.exeris.caps.sessionmanagement.api.SessionStore",
-            "version" : "1.0.0"
+            "version" : "2.0.0"
           },
           {
             "service" : "eu.exeris.caps.sessionmanagement.api.RefreshTokenRotation",
-            "version" : "1.0.0"
+            "version" : "2.0.0"
           }
         ],
         "requires" : [

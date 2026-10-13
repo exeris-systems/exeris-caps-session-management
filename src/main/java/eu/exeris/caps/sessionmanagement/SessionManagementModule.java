@@ -7,7 +7,6 @@ import eu.exeris.caps.sessionmanagement.api.SessionStore;
 import eu.exeris.caps.sessionmanagement.internal.DefaultRefreshTokenRotation;
 import eu.exeris.caps.sessionmanagement.internal.DefaultSessionStore;
 import eu.exeris.caps.sessionmanagement.internal.audit.SessionAuditBridge;
-import eu.exeris.caps.sessionmanagement.internal.repository.InMemorySessionRepository;
 import eu.exeris.caps.sessionmanagement.internal.repository.PostgresSessionRepository;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRepository;
 import eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer;
@@ -18,6 +17,7 @@ import eu.exeris.sdk.annotation.capability.Provides;
 import eu.exeris.sdk.annotation.capability.Requires;
 import eu.exeris.sdk.composition.lifecycle.CapabilityLifecycleHooks;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,16 +27,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Provides Layer 5 Domain Primitives:
  * <ul>
- *   <li>{@link SessionStore} (one session per sign-in: list active sessions, revoke one, revoke all for subject, create session)</li>
- *   <li>{@link RefreshTokenRotation} (opaque single-use refresh tokens stored hashed, rotated on every use, atomic replay detection)</li>
+ *   <li>{@link SessionStore}: one session per sign-in; list, revoke one, revoke all and log out, each
+ *       scoped to the authenticated {@link eu.exeris.caps.sessionmanagement.api.SessionPrincipal}</li>
+ *   <li>{@link RefreshTokenRotation}: opaque single-use refresh tokens stored hashed, rotated on every
+ *       use; a reused token revokes its whole family</li>
  * </ul>
+ *
+ * <p>Sessions are persisted in PostgreSQL through the kernel {@link TransactionalExecutor}; there is no
+ * other store. A module built without one has no services, and {@link #initialize()} refuses to start it.
  *
  * @since 0.1.0
  */
 @CapabilityModule
 @CapabilityLifecycle
-@Provides(service = SessionStore.class, version = "1.0.0")
-@Provides(service = RefreshTokenRotation.class, version = "1.0.0")
+@Provides(service = SessionStore.class, version = "2.0.0")
+@Provides(service = RefreshTokenRotation.class, version = "2.0.0")
 @Requires(service = TransactionalExecutor.class, optional = true)
 @Requires(service = AuditLogSink.class, versionRange = "[1.0.0,2.0.0)", optional = true)
 @Requires(service = AccessTokenIssuer.class, versionRange = "[1.0.0,2.0.0)", optional = true)
@@ -49,19 +54,21 @@ public final class SessionManagementModule implements CapabilityLifecycleHooks {
     private final AtomicBoolean ready = new AtomicBoolean(false);
 
     /**
-     * Public no-arg constructor for reflective instantiation by the composition conductor.
+     * Public no-arg constructor for reflective instantiation by the composition conductor. The module it
+     * builds has no persistence, so it exposes no services and refuses to initialize.
      */
     public SessionManagementModule() {
-        this(
-                new InMemorySessionRepository(),
-                SessionPolicy.defaults(),
-                null,
-                null
-        );
+        this.sessionStore = null;
+        this.refreshTokenRotation = null;
     }
 
     /**
-     * Constructor wiring with a PostgreSQL {@link TransactionalExecutor}.
+     * Wires the module over PostgreSQL with the system clock.
+     *
+     * @param tx                kernel transactional executor; required
+     * @param policy            session policy, or {@code null} for {@link SessionPolicy#defaults()}
+     * @param accessTokenIssuer issues an access token on each rotation, or {@code null} for none
+     * @param auditLogSink      receives security events, or {@code null} for none
      */
     public SessionManagementModule(
             TransactionalExecutor tx,
@@ -69,51 +76,75 @@ public final class SessionManagementModule implements CapabilityLifecycleHooks {
             AccessTokenIssuer accessTokenIssuer,
             AuditLogSink auditLogSink
     ) {
-        this(
-                tx != null ? new PostgresSessionRepository(tx) : new InMemorySessionRepository(),
-                policy != null ? policy : SessionPolicy.defaults(),
-                accessTokenIssuer,
-                auditLogSink != null ? new SessionAuditBridge(auditLogSink) : null
-        );
+        this(tx, policy, accessTokenIssuer, auditLogSink, Clock.systemUTC());
     }
 
     /**
-     * Constructor wiring with required and optional capability services using default policy.
+     * Wires the module over PostgreSQL with an explicit clock, which decides every expiry and idle check.
+     *
+     * @param tx                kernel transactional executor; required
+     * @param policy            session policy, or {@code null} for {@link SessionPolicy#defaults()}
+     * @param accessTokenIssuer issues an access token on each rotation, or {@code null} for none
+     * @param auditLogSink      receives security events, or {@code null} for none
+     * @param clock             time source; required
      */
     public SessionManagementModule(
             TransactionalExecutor tx,
+            SessionPolicy policy,
             AccessTokenIssuer accessTokenIssuer,
-            AuditLogSink auditLogSink
+            AuditLogSink auditLogSink,
+            Clock clock
     ) {
-        this(tx, SessionPolicy.defaults(), accessTokenIssuer, auditLogSink);
+        this(
+                new PostgresSessionRepository(Objects.requireNonNull(tx, "tx must not be null")),
+                policy != null ? policy : SessionPolicy.defaults(),
+                accessTokenIssuer,
+                auditLogSink != null ? new SessionAuditBridge(auditLogSink) : null,
+                clock
+        );
     }
 
-    /**
-     * Constructor wiring with custom repository and dependencies.
-     */
-    public SessionManagementModule(
+    SessionManagementModule(
             SessionRepository repository,
             SessionPolicy policy,
             AccessTokenIssuer accessTokenIssuer,
-            SessionAuditBridge auditBridge
+            SessionAuditBridge auditBridge,
+            Clock clock
     ) {
         Objects.requireNonNull(repository, "repository must not be null");
         Objects.requireNonNull(policy, "policy must not be null");
+        Objects.requireNonNull(clock, "clock must not be null");
 
-        this.sessionStore = new DefaultSessionStore(repository, policy, auditBridge);
-        this.refreshTokenRotation = new DefaultRefreshTokenRotation(repository, policy, accessTokenIssuer, auditBridge);
+        this.sessionStore = new DefaultSessionStore(repository, policy, auditBridge, clock);
+        this.refreshTokenRotation = new DefaultRefreshTokenRotation(repository, policy, accessTokenIssuer, auditBridge, clock);
     }
 
+    /**
+     * @throws IllegalStateException if the module was built without persistence
+     */
     public SessionStore sessionStore() {
+        requireWired();
         return sessionStore;
     }
 
+    /**
+     * @throws IllegalStateException if the module was built without persistence
+     */
     public RefreshTokenRotation refreshTokenRotation() {
+        requireWired();
         return refreshTokenRotation;
+    }
+
+    /**
+     * Whether the module was built with persistence and exposes its services.
+     */
+    public boolean isWired() {
+        return sessionStore != null;
     }
 
     @Override
     public void initialize() throws Exception {
+        requireWired();
         initialized.set(true);
     }
 
@@ -139,5 +170,12 @@ public final class SessionManagementModule implements CapabilityLifecycleHooks {
 
     public boolean isInitialized() {
         return initialized.get();
+    }
+
+    private void requireWired() {
+        if (!isWired()) {
+            throw new IllegalStateException(
+                    "exeris-caps-session-management has no TransactionalExecutor wired; it has no store without one");
+        }
     }
 }

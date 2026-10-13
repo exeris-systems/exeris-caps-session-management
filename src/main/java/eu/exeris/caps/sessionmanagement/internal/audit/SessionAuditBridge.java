@@ -3,6 +3,7 @@ package eu.exeris.caps.sessionmanagement.internal.audit;
 import eu.exeris.caps.audittrail.api.AuditEvent;
 import eu.exeris.caps.audittrail.api.AuditLogSink;
 import eu.exeris.caps.sessionmanagement.api.ClientMetadata;
+import eu.exeris.caps.sessionmanagement.internal.repository.RevocationReason;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -43,17 +44,19 @@ public final class SessionAuditBridge {
         emit("SESSION_CREATED", sessionId, subjectId, details);
     }
 
-    public void emitSessionRevoked(UUID sessionId, UUID subjectId) {
+    public void emitSessionRevoked(UUID sessionId, UUID subjectId, RevocationReason reason) {
         if (sink == null) return;
         Map<String, Object> details = new HashMap<>();
         if (sessionId != null) details.put("sessionId", sessionId.toString());
+        if (reason != null) details.put("reason", reason.name());
         emit("SESSION_REVOKED", sessionId, subjectId, details);
     }
 
-    public void emitSessionsRevokedAll(UUID subjectId, int count) {
+    public void emitSessionsRevokedAll(UUID subjectId, int count, RevocationReason reason) {
         if (sink == null) return;
         Map<String, Object> details = new HashMap<>();
         details.put("revokedCount", count);
+        if (reason != null) details.put("reason", reason.name());
         emit("SESSIONS_REVOKED_ALL", null, subjectId, details);
     }
 
