@@ -11,7 +11,8 @@
     <name>Exeris Caps :: Session Management</name>
     <description>
         Layer 5 Domain Primitive capability providing session storage,
-        refresh token rotation, atomic replay attack detection, and session revocation.
+        single-use refresh token rotation with reuse detection, idle and absolute session lifetimes,
+        and subject-scoped session revocation.
     </description>
     <url>https://github.com/exeris-systems/exeris-caps-session-management</url>
     <inceptionYear>2026</inceptionYear>
