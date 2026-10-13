@@ -33,7 +33,7 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Binds the session-management contract to live PostgreSQL, applying the shipped DDL. Each unit of work
+ * Binds the session-management contract to live PostgreSQL, applying {@link SessionManagementModule#MIGRATIONS}. Each unit of work
  * gets its own connection, so the concurrency cases contend on real row locks.
  */
 @Tag("integration")
@@ -45,9 +45,11 @@ class PostgresSessionManagementIT extends AbstractSessionManagementContractTest 
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16");
 
     @BeforeAll
-    static void applySchema() throws SQLException {
+    static void applyMigrations() throws SQLException {
         try (Connection c = open(); Statement stmt = c.createStatement()) {
-            stmt.execute(readSchema());
+            for (String migration : SessionManagementModule.MIGRATIONS) {
+                stmt.execute(readResource(migration));
+            }
         }
     }
 
@@ -101,10 +103,10 @@ class PostgresSessionManagementIT extends AbstractSessionManagementContractTest 
         return DriverManager.getConnection(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
     }
 
-    private static String readSchema() {
-        try (InputStream in = PostgresSessionManagementIT.class.getResourceAsStream("/schema/session-management-schema.sql")) {
+    private static String readResource(String path) {
+        try (InputStream in = PostgresSessionManagementIT.class.getClassLoader().getResourceAsStream(path)) {
             if (in == null) {
-                throw new IllegalStateException("schema/session-management-schema.sql is not on the classpath");
+                throw new IllegalStateException(path + " is not on the classpath");
             }
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {

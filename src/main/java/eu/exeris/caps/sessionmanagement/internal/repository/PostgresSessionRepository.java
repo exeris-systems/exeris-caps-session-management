@@ -19,8 +19,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * PostgreSQL {@link SessionRepository} over the kernel Persistence SPI. The schema is
- * {@code schema/session-management-schema.sql}.
+ * PostgreSQL {@link SessionRepository} over the kernel Persistence SPI. The schema is the
+ * migration list {@link eu.exeris.caps.sessionmanagement.SessionManagementModule#MIGRATIONS}.
+ *
+ * <p>Every statement numbers its placeholders {@code $1..$n} in ascending order, each used once: the
+ * Community binding rewrites {@code $n} to a positional {@code ?}, so a repeated or out-of-order
+ * placeholder would bind the wrong value.
  *
  * <p>Lock order, in every transaction: the {@code sessions} row first ({@code SELECT ... FOR UPDATE} or
  * the {@code UPDATE} that revokes it), then that session's {@code refresh_tokens} rows.

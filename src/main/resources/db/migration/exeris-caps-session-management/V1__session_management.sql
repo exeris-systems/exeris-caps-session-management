@@ -1,4 +1,4 @@
--- PostgreSQL schema for exeris-caps-session-management (ADR-099).
+-- exeris-caps-session-management V1: sessions and refresh tokens (ADR-099). Idempotent DDL.
 --
 -- Tenancy: these tables carry no tenant_id and no row-level security policy. ADR-099 obligation 10
 -- keys session records by subject, and subjects are per deployment; tenant membership lives in

@@ -19,6 +19,7 @@ import eu.exeris.sdk.composition.lifecycle.CapabilityLifecycleHooks;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -34,7 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * </ul>
  *
  * <p>Sessions are persisted in PostgreSQL through the kernel {@link TransactionalExecutor}; there is no
- * other store. A module built without one has no services, and {@link #initialize()} refuses to start it.
+ * other store, and its schema is {@link #MIGRATIONS}. A module built without an executor has no services,
+ * and {@link #initialize()} refuses to start it.
  *
  * @since 0.1.0
  */
@@ -46,6 +48,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Requires(service = AuditLogSink.class, versionRange = "[1.0.0,2.0.0)", optional = true)
 @Requires(service = AccessTokenIssuer.class, versionRange = "[1.0.0,2.0.0)", optional = true)
 public final class SessionManagementModule implements CapabilityLifecycleHooks {
+
+    /**
+     * The schema migrations of this capability, in the order they apply, as classpath resource paths.
+     * The capability does not apply them itself; the composing SKU does, before the first service call.
+     */
+    public static final List<String> MIGRATIONS = List.of(
+            "db/migration/exeris-caps-session-management/V1__session_management.sql");
 
     private final SessionStore sessionStore;
     private final RefreshTokenRotation refreshTokenRotation;
