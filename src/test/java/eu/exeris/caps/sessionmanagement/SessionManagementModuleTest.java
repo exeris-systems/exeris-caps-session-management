@@ -5,7 +5,6 @@ import eu.exeris.caps.sessionmanagement.api.IssuedRefreshToken;
 import eu.exeris.caps.sessionmanagement.api.RotationOutcome;
 import eu.exeris.caps.sessionmanagement.api.Session;
 import eu.exeris.caps.sessionmanagement.api.SessionPolicy;
-import eu.exeris.caps.sessionmanagement.spi.InMemoryAccessTokenIssuer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

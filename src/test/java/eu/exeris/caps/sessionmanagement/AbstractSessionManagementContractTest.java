@@ -18,7 +18,6 @@ import eu.exeris.caps.sessionmanagement.api.exception.SessionExpiredException;
 import eu.exeris.caps.sessionmanagement.api.exception.SessionNotFoundException;
 import eu.exeris.caps.sessionmanagement.internal.audit.SessionAuditBridge;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRepository;
-import eu.exeris.caps.sessionmanagement.spi.InMemoryAccessTokenIssuer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
