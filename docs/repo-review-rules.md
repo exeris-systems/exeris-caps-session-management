@@ -100,10 +100,13 @@ S8. **Refresh tokens are single-use, opaque and stored hashed.** Only the SHA-25
     `[HARD BLOCK]`.
 
 S9. **A consumed token presented again is a replay, and the session is revoked.**
-    `RefreshTokenRotation.rotate` returns `RotationOutcome.ReuseDetected` for the first presentation of
-    a consumed token and revokes the session and every refresh token issued for it (ADR-099
-    obligation 9), with the check, the consumption and the revocation atomic; later presentations
-    return `RotationOutcome.Rejected(SESSION_REVOKED)`. A path that accepts a consumed token, or
+    While the session is live, `RefreshTokenRotation.rotate` returns `RotationOutcome.ReuseDetected`
+    for the first presentation of a consumed token and revokes the session and every refresh token
+    issued for it (ADR-099 obligation 9), with the check, the consumption and the revocation atomic;
+    later presentations return `RotationOutcome.Rejected(SESSION_REVOKED)`. A consumed token presented
+    to a session that has expired or gone idle returns `Rejected(SESSION_EXPIRED)` or
+    `Rejected(SESSION_IDLE)` with a `TOKEN_REPLAY_DETECTED` audit event and revokes nothing; that is
+    correct, not a defect, and a path that skips the audit event there is a finding. A path that accepts a consumed token, or
     softens the response to it, for example with a grace window, or a revocation that leaves the
     session's other refresh tokens valid → `[HARD BLOCK]`.
 
