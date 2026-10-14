@@ -26,12 +26,26 @@ import java.util.concurrent.atomic.AtomicReference;
  * Community binding rewrites {@code $n} to a positional {@code ?}, so a repeated or out-of-order
  * placeholder would bind the wrong value.
  *
- * <p>Lock order, in every transaction: the {@code sessions} row first ({@code SELECT ... FOR UPDATE} or
- * the {@code UPDATE} that revokes it), then that session's {@code refresh_tokens} rows.
+ * <p>Lock order, in every transaction that knows its subject up front: the subject's advisory lock
+ * ({@link #lockSubject}), then the subject's {@code sessions} rows ordered by {@code created_at DESC, id DESC},
+ * then those sessions' {@code refresh_tokens} rows. A transaction that starts from a refresh token
+ * ({@link #rotate}, {@link #revokeFamilyByTokenHash}) cannot know the subject before it has a row, so it
+ * takes the one {@code sessions} row, then its tokens, and never waits for a second session row; it
+ * cannot close a cycle with the transactions above.
+ *
+ * <p>The advisory lock is what makes the per-subject session limit hold: the rows that a concurrent
+ * sign-in would have to lock to be counted do not exist until it inserts them, so row locks alone let
+ * two sign-ins both count below the limit and both insert.
  *
  * @since 0.1.0
  */
 public final class PostgresSessionRepository implements SessionRepository {
+
+    /**
+     * First key of the two-key advisory lock taken per subject. Fixed, so that it names this capability's
+     * lock space and does not collide with advisory locks taken by other capabilities on the same database.
+     */
+    static final int SUBJECT_LOCK_NAMESPACE = 0x53455353;
 
     private static final String SUBJECT_REQUIRED = "subjectId must not be null";
 
@@ -51,6 +65,7 @@ public final class PostgresSessionRepository implements SessionRepository {
         Instant idleCutoff = now.minus(idleTimeout);
         List<UUID> evicted = new ArrayList<>();
         tx.executeManaged(conn -> {
+            lockSubject(conn, session.subjectId());
             List<UUID> active = new ArrayList<>();
             try (PersistenceStatement stmt = conn.prepare(
                     "SELECT id FROM sessions "
@@ -110,6 +125,7 @@ public final class PostgresSessionRepository implements SessionRepository {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         AtomicInteger revoked = new AtomicInteger();
         tx.executeManaged(conn -> {
+            lockSubject(conn, subjectId);
             long updated;
             try (PersistenceStatement stmt = conn.prepare(
                     "UPDATE sessions SET revoked_at = $1, revocation_reason = $2 "
@@ -130,6 +146,17 @@ public final class PostgresSessionRepository implements SessionRepository {
         Objects.requireNonNull(subjectId, SUBJECT_REQUIRED);
         AtomicInteger revoked = new AtomicInteger();
         tx.executeManaged(conn -> {
+            lockSubject(conn, subjectId);
+            try (PersistenceStatement stmt = conn.prepare(
+                    "SELECT id FROM sessions WHERE subject_id = $1 AND revoked_at IS NULL "
+                            + "ORDER BY created_at DESC, id DESC FOR UPDATE")) {
+                stmt.bindUuid(0, subjectId);
+                try (QueryResult rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        // rows are held, in the documented order, until the transaction ends
+                    }
+                }
+            }
             try (PersistenceStatement stmt = conn.prepare(
                     "UPDATE sessions SET revoked_at = $1, revocation_reason = $2 "
                             + "WHERE subject_id = $3 AND revoked_at IS NULL")) {
@@ -152,6 +179,7 @@ public final class PostgresSessionRepository implements SessionRepository {
         Objects.requireNonNull(token, "token must not be null");
         AtomicReference<IssueResult> result = new AtomicReference<>();
         tx.executeManaged(conn -> {
+            lockSubject(conn, subjectId);
             Optional<SessionRecord> locked = lockSession(conn, token.sessionId());
             if (locked.isEmpty() || !locked.get().subjectId().equals(subjectId)) {
                 result.set(IssueResult.refused(IssueResult.Status.SESSION_NOT_FOUND));
@@ -329,6 +357,19 @@ public final class PostgresSessionRepository implements SessionRepository {
             }
         });
         return Optional.ofNullable(result.get());
+    }
+
+    /**
+     * Serialises every transaction that counts or changes one subject's sessions, until it ends. The key is
+     * derived from the subject alone because sessions carry no tenant.
+     */
+    private static void lockSubject(PersistenceConnection conn, UUID subjectId) {
+        try (PersistenceStatement stmt = conn.prepare("SELECT pg_advisory_xact_lock($1, hashtext($2))")) {
+            stmt.bindInt(0, SUBJECT_LOCK_NAMESPACE).bindString(1, subjectId.toString());
+            try (QueryResult rs = stmt.executeQuery()) {
+                rs.next();
+            }
+        }
     }
 
     private static Optional<SessionRecord> lockSession(PersistenceConnection conn, UUID sessionId) {

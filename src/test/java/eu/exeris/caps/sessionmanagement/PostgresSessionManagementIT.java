@@ -12,6 +12,7 @@ import eu.exeris.kernel.spi.persistence.TransactionIsolation;
 import eu.exeris.kernel.spi.persistence.TransactionalExecutor;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -27,7 +28,15 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.IntFunction;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,6 +122,64 @@ class PostgresSessionManagementIT extends AbstractSessionManagementContractTest 
             assertThat(rs.next()).isTrue();
             assertThat(rs.getString(1)).isEqualTo("REFRESH_TOKEN_REUSE");
             assertThat(rs.getLong(2)).isZero();
+        }
+    }
+
+    @RepeatedTest(5)
+    @DisplayName("concurrent sign-ins of one subject never leave more active sessions than the policy allows")
+    void concurrentSignInsHoldTheSessionLimit() throws Exception {
+        UUID subject = UUID.randomUUID();
+        int contenders = 12;
+
+        runConcurrently(contenders, i -> store.createSession(subject, ClientMetadata.empty()));
+
+        assertThat(activeSessions(subject)).isEqualTo(POLICY.maxActiveSessionsPerSubject());
+    }
+
+    @RepeatedTest(5)
+    @DisplayName("concurrent revoke-all and sign-ins of one subject complete without deadlock")
+    void concurrentRevokeAllAndSignInsDoNotDeadlock() throws Exception {
+        UUID subject = UUID.randomUUID();
+        for (int i = 0; i < POLICY.maxActiveSessionsPerSubject(); i++) {
+            store.createSession(subject, ClientMetadata.empty());
+        }
+
+        runConcurrently(12, i -> {
+            if (i % 3 == 0) {
+                return store.revokeAllForSubject(subject);
+            }
+            return store.createSession(subject, ClientMetadata.empty());
+        });
+
+        assertThat(activeSessions(subject)).isLessThanOrEqualTo(POLICY.maxActiveSessionsPerSubject());
+    }
+
+    private static <T> void runConcurrently(int contenders, IntFunction<T> work) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(contenders);
+        try {
+            CyclicBarrier start = new CyclicBarrier(contenders);
+            List<Future<T>> futures = new ArrayList<>();
+            for (int i = 0; i < contenders; i++) {
+                int index = i;
+                futures.add(pool.submit(() -> {
+                    start.await(10, TimeUnit.SECONDS);
+                    return work.apply(index);
+                }));
+            }
+            for (Future<T> f : futures) {
+                f.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private static long activeSessions(UUID subject) throws SQLException {
+        try (Connection c = open(); Statement stmt = c.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND subject_id = '" + subject + "'")) {
+            rs.next();
+            return rs.getLong(1);
         }
     }
 
