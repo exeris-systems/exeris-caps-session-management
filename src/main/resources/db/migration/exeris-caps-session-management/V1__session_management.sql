@@ -1,20 +1,20 @@
 -- exeris-caps-session-management V1: sessions and refresh tokens (ADR-099). Idempotent DDL.
 --
--- This is the first migration of record: no earlier schema for this capability was applied by any
--- released artefact, so nothing here alters or drops an existing table.
+-- V1 creates the schema; it alters and drops nothing.
 --
 -- Tenancy: these tables carry no tenant_id and no row-level security policy. ADR-099 obligation 10
 -- keys session records by subject, and subjects are per deployment; tenant membership lives in
 -- multi-tenancy and rbac-policy. A session is created at sign-in and rotated by presenting a refresh
 -- token, and neither request has a verified tenant to scope by. Isolation between subjects is enforced
 -- by the capability's API, whose subject-scoped operations take the subject from the verified
--- principal and put it in every WHERE clause. Deploy these tables in the identity deployment's own
--- schema or database, not beside tenant-scoped tables that other capabilities reach.
+-- principal and put it in the WHERE clause of every principal-scoped statement. Deploy these tables in
+-- the identity deployment's own schema or database, not beside tenant-scoped tables that other
+-- capabilities reach.
 --
 -- Raw refresh tokens are never stored; token_hash is the lowercase hex SHA-256 of the raw value.
 
--- Fails fast on a sessions table from a pre-release layout (it has transition_until); IF NOT EXISTS
--- below would otherwise skip it and the repository would fail on its first statement.
+-- Fails fast on a sessions table that has a transition_until column; IF NOT EXISTS below would
+-- otherwise skip it and the repository would fail on its first statement.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns

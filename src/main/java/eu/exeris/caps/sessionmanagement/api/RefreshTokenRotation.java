@@ -8,8 +8,9 @@ import java.util.UUID;
  * <p>Tokens are persisted as SHA-256 hashes only; the raw value is returned once. Each rotation consumes
  * the presented token and issues its successor in the same transaction, and consumption is a single
  * conditional write, so of any number of concurrent presentations of one token exactly one succeeds.
- * A second presentation of a consumed token, however soon after the first, revokes the session and
- * every token issued for it.
+ * While the session is live, the first later presentation of a consumed token, however soon after the
+ * first, revokes the session and every token issued for it; {@link RotationOutcome} lists what the other
+ * presentations yield.
  *
  * @since 0.1.0
  */
@@ -36,7 +37,9 @@ public interface RefreshTokenRotation {
      *
      * @param rawRefreshToken raw refresh token presented by the client
      * @param metadata        client environment attributes recorded on the session
-     * @return the outcome; never {@code null}
+     * @return {@link RotationOutcome.Rotated} for a live token, {@link RotationOutcome.ReuseDetected} for the
+     *         first presentation of a consumed token on a live session, and {@link RotationOutcome.Rejected}
+     *         with a reason otherwise; never {@code null}
      */
     RotationOutcome rotate(String rawRefreshToken, ClientMetadata metadata);
 

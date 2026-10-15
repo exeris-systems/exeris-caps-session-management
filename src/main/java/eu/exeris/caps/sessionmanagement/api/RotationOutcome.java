@@ -7,9 +7,12 @@ import java.util.UUID;
 /**
  * Outcome of presenting a refresh token to {@link RefreshTokenRotation#rotate}.
  *
- * <p>Exactly one presentation of a refresh token yields {@link Rotated}. Every later presentation of the
- * same token yields {@link ReuseDetected}, and by then the session and every refresh token issued for it
- * are revoked. There is no interval in which a consumed token is accepted again.
+ * <p>Exactly one presentation of a refresh token yields {@link Rotated}. The first later presentation of the
+ * same token, while its session is live, yields {@link ReuseDetected} and revokes the session and every
+ * refresh token issued for it. After that, a presentation yields {@link Rejected} with
+ * {@link Reason#SESSION_REVOKED}; on a session that has expired or gone idle it yields {@link Rejected} with
+ * {@link Reason#SESSION_EXPIRED} or {@link Reason#SESSION_IDLE} and revokes nothing. There is no interval
+ * in which a consumed token is accepted again.
  *
  * @since 0.1.0
  */
@@ -58,7 +61,8 @@ public sealed interface RotationOutcome {
     }
 
     /**
-     * The token was refused without being consumed.
+     * The token was refused. A token that was live is not consumed by the refusal; a token that was already
+     * consumed stays consumed, and the refusal reports why its session can no longer be refreshed.
      *
      * @param reason why it was refused
      */
