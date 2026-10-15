@@ -34,8 +34,9 @@ jobs:
         with:
           path: exeris-caps-session-management
 
-      # The SDK and the codegen chain are not published to a Maven repository, so both are built
-      # from source at the release tag matching the version in pom.xml. An immutable ref keeps an
+      # The SDK is built from source at the release tag matching the version in pom.xml, and the
+      # 0.9.0 codegen chain the sibling caps below declare is built from source at its tag. This
+      # capability's own tooling (0.10.0) resolves from Maven Central. An immutable ref keeps an
       # unrelated upstream commit from turning this build red.
       - name: Checkout exeris-sdk (v0.12.0 — matches exeris.sdk.version in the POM)
         uses: actions/checkout@v7
@@ -44,7 +45,7 @@ jobs:
           ref: v0.12.0
           path: exeris-sdk
 
-      - name: Checkout exeris-tooling (v0.9.0 — matches exeris.tooling.version in the POM)
+      - name: Checkout exeris-tooling (v0.9.0 — the version the sibling caps below declare)
         uses: actions/checkout@v7
         with:
           repository: exeris-systems/exeris-tooling
