@@ -58,7 +58,8 @@ public record SessionPolicy(
     }
 
     /**
-     * The earliest {@code lastActiveAt} a session may have and still be active at {@code now}.
+     * The idle cut-off at {@code now}, exclusive: a session is active only if its {@code lastActiveAt}
+     * is strictly after it.
      *
      * @param now reference instant
      * @return idle cut-off; a session last active at or before it is idle
