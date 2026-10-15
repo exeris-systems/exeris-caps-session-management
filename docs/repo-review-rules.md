@@ -4,7 +4,7 @@ type: reference
 visibility: public
 owning-repo: exeris-caps-session-management
 status: active
-last-verified: 2026-10-13
+last-verified: 2026-10-14
 ---
 
 # Review rules for `exeris-caps-session-management`
@@ -34,15 +34,17 @@ S1. **The cap-tier Wall holds** (ADR-055, ADR-006; `AGENTS.md` §2). Only what t
     `exeris:verify-capabilities` at `process-classes` over the compiled main classes, and it rejects
     a reference to `org.springframework.*`, `io.netty.*`, `reactor.*` or `jakarta.servlet.*`, to
     kernel internals (`eu.exeris.kernel.**.internal.**`), and to a sibling capability's `internal`
-    package; only `eu.exeris.kernel.spi.*` is the kernel this capability may name. In a diff: such
+    package; the public (non-`internal`) packages of `exeris-kernel-spi`
+    and `exeris-kernel-core` are the kernel this capability may name. In a diff: such
     an import in `src/main`; a dependency in `pom.xml` that brings one in; a rename of the package
     root `eu.exeris.caps.sessionmanagement` or an extra segment in it, because the guard derives the
     capability's name from the segment after `eu.exeris.caps.`;
     `eu.exeris.caps.sessionmanagement.internal` is private to this capability and
     `eu.exeris.caps.sessionmanagement.api` is the cross-cap surface, and an `internal` type in a
     public signature → `[HARD BLOCK]`. A Spring, servlet, Netty or reactor import in `src/test` is
-    outside what the guard scans and is still forbidden by `AGENTS.md` → `[CONTRACT]`. A
-    `kernel-core` or `kernel-community` dependency outside `test` scope → `[HARD BLOCK]`.
+    outside what the guard scans and is still forbidden by `AGENTS.md` → `[CONTRACT]`. A kernel
+    driver dependency (`exeris-kernel-community` or an enterprise driver) outside `test` scope →
+    `[HARD BLOCK]`: the driver is chosen by the SKU, never by a capability.
 
 S2. **The committed manifest is regenerated, never edited.**
     `src/main/generated/java/cap-manifest.json` is written by `exeris:generate`, and a clean
@@ -100,25 +102,36 @@ S8. **Refresh tokens are single-use, opaque and stored hashed.** Only the SHA-25
     `[HARD BLOCK]`.
 
 S9. **A consumed token presented again is a replay, and the session is revoked.**
-    `RefreshTokenRotation.rotate` throws `RefreshTokenReplayedException` and the session is revoked
-    immediately (ADR-099 obligation 9), with the check and the consumption atomic. A path that
-    accepts a consumed token, or softens the response to it, for example with a grace window, or a
-    revocation that leaves the session's other refresh tokens valid → `[HARD BLOCK]`.
+    While the session is live, `RefreshTokenRotation.rotate` returns `RotationOutcome.ReuseDetected`
+    for the first presentation of a consumed token and revokes the session and every refresh token
+    issued for it (ADR-099 obligation 9), with the check, the consumption and the revocation atomic;
+    later presentations return `RotationOutcome.Rejected(SESSION_REVOKED)`. A consumed token presented
+    to a session that has expired or gone idle returns `Rejected(SESSION_EXPIRED)` or
+    `Rejected(SESSION_IDLE)` with a `TOKEN_REPLAY_DETECTED` audit event and revokes nothing; that is
+    correct, not a defect, and a path that skips the audit event there is a finding. A path that accepts a consumed token, or
+    softens the response to it, for example with a grace window, or a revocation that leaves the
+    session's other refresh tokens valid → `[HARD BLOCK]`.
 
-S10. **Session operations are scoped to the subject.** `revokeSession(subjectId, sessionId)` revokes
-    a session that belongs to the subject and answers `false` otherwise; `listActiveSessions` lists
-    non-expired, non-revoked sessions of one subject. A change that lets a call act on a session
-    that belongs to another subject → `[HARD BLOCK]`.
+S10. **Session operations are scoped to the subject.** `SessionStore.revokeSession(principal, sessionId)`
+    revokes a session that belongs to the principal's subject and answers `false` otherwise, without
+    telling an unknown session from another subject's; `listSessions(principal)` lists non-expired,
+    non-revoked sessions of that subject only. A `SessionPrincipal` is produced only by
+    `SessionPrincipal.current()`. A change that lets a call act on a session that belongs to another
+    subject, or that accepts a subject identifier from a request in place of the principal →
+    `[HARD BLOCK]`.
 
 S11. **The session limit holds.** `createSession` evicts and revokes the oldest active session once
     `SessionPolicy.maxActiveSessionsPerSubject()` is reached. A change that removes the eviction or
     lets the count exceed the limit → `[CONTRACT]`.
 
-S12. **Storage honours the README.** In-memory unless a `TransactionalExecutor` is supplied, then
-    PostgreSQL, with the DDL in `src/main/resources/schema/session-management-schema.sql` applied by
-    the SKU. A change to a stored column or a table that leaves that file unchanged → `[CONTRACT]`.
-    The in-memory `spi.AccessTokenIssuer` produces a placeholder token and is for tests: a
-    production path that depends on it → `[HARD BLOCK]`.
+S12. **Storage honours the README.** The wired module requires a `TransactionalExecutor` and stores in
+    PostgreSQL; a module built without one exposes no services and refuses to initialize, and there is
+    no in-memory store in `src/main`. The DDL is
+    `src/main/resources/db/migration/exeris-caps-session-management/V1__session_management.sql`,
+    listed in `SessionManagementModule.MIGRATIONS` and applied by the SKU. A change to a stored column
+    or a table that leaves that file unchanged → `[CONTRACT]`. The `AccessTokenIssuer` in `src/test`
+    produces a placeholder token and is for tests: a production path that depends on it →
+    `[HARD BLOCK]`.
 
 ## Where this does not apply, and what it costs
 

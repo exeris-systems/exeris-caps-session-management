@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Internal entity record representing a row in the {@code refresh_tokens} table.
+ * A row of the {@code refresh_tokens} table. Only the SHA-256 hash of the raw token is held.
  *
  * @since 0.1.0
  */
@@ -15,21 +15,8 @@ public record RefreshTokenRecord(
         Instant createdAt,
         Instant expiresAt,
         Instant consumedAt,
-        Instant revokedAt,
-        Instant transitionUntil
+        Instant revokedAt
 ) {
-
-    public RefreshTokenRecord(
-            UUID id,
-            UUID sessionId,
-            String tokenHash,
-            Instant createdAt,
-            Instant expiresAt,
-            Instant consumedAt,
-            Instant revokedAt
-    ) {
-        this(id, sessionId, tokenHash, createdAt, expiresAt, consumedAt, revokedAt, null);
-    }
 
     public boolean isConsumed() {
         return consumedAt != null;
@@ -41,9 +28,5 @@ public record RefreshTokenRecord(
 
     public boolean isExpired(Instant now) {
         return !expiresAt.isAfter(now);
-    }
-
-    public boolean isValid(Instant now) {
-        return !isConsumed() && !isRevoked() && !isExpired(now);
     }
 }

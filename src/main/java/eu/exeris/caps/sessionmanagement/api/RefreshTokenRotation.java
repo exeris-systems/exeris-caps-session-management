@@ -3,42 +3,53 @@ package eu.exeris.caps.sessionmanagement.api;
 import java.util.UUID;
 
 /**
- * Layer 5 Domain Primitive contract for single-use opaque refresh token issuance and rotation.
+ * Opaque, single-use refresh tokens bound to a session (ADR-099 obligation 9).
  *
- * <p>Tokens are persisted as SHA-256 hashes only. On each rotation, the presented token is consumed
- * and replaced with a fresh token. If an already-consumed token is presented (replay attack), the session
- * is immediately revoked.
+ * <p>Tokens are persisted as SHA-256 hashes only; the raw value is returned once. Each rotation consumes
+ * the presented token and issues its successor in the same transaction, and consumption is a single
+ * conditional write, so of any number of concurrent presentations of one token exactly one succeeds.
+ * While the session is live, the first later presentation of a consumed token, however soon after the
+ * first, revokes the session and every token issued for it; {@link RotationOutcome} lists what the other
+ * presentations yield.
  *
  * @since 0.1.0
  */
 public interface RefreshTokenRotation {
 
     /**
-     * Issues an initial single-use refresh token for an active session.
+     * Issues the first refresh token of a session that was just created.
      *
-     * @param sessionId session identifier
-     * @param subjectId identity subject identifier
-     * @return newly issued refresh token containing unhashed token value
+     * @param sessionId session returned by {@link SessionStore#createSession}
+     * @param subjectId subject the session was created for
+     * @return the refresh token, with its raw value
+     * @throws eu.exeris.caps.sessionmanagement.api.exception.SessionNotFoundException if the session does not
+     *         exist or belongs to another subject
+     * @throws eu.exeris.caps.sessionmanagement.api.exception.SessionRevokedException if the session is revoked
+     * @throws eu.exeris.caps.sessionmanagement.api.exception.SessionExpiredException if the session is past its
+     *         absolute lifetime or idle
+     * @throws eu.exeris.caps.sessionmanagement.api.exception.SessionException if a refresh token was already
+     *         issued for the session; later tokens come from {@link #rotate} only
      */
     IssuedRefreshToken issue(UUID sessionId, UUID subjectId);
 
     /**
-     * Rotates a single-use refresh token, issuing a new refresh token and an optional fresh access token.
+     * Consumes a refresh token and issues its successor.
      *
-     * <p>Enforces atomic replay detection. If the token was already consumed, a
-     * {@link eu.exeris.caps.sessionmanagement.api.exception.RefreshTokenReplayedException} is thrown and
-     * the underlying session is revoked.
-     *
-     * @param rawRefreshToken plaintext opaque refresh token presented by client
-     * @param metadata        client environment metadata
-     * @return rotation result with new tokens
+     * @param rawRefreshToken raw refresh token presented by the client
+     * @param metadata        client environment attributes recorded on the session
+     * @return {@link RotationOutcome.Rotated} for a live token, {@link RotationOutcome.ReuseDetected} for the
+     *         first presentation of a consumed token on a live session, and {@link RotationOutcome.Rejected}
+     *         with a reason otherwise; never {@code null}
      */
-    RotationResult rotate(String rawRefreshToken, ClientMetadata metadata);
+    RotationOutcome rotate(String rawRefreshToken, ClientMetadata metadata);
 
     /**
-     * Explicitly revokes a refresh token by its raw value.
+     * Revokes the session a presented refresh token belongs to, with every token issued for it. Holding
+     * a token of the family is the authority to end it.
      *
-     * @param rawRefreshToken plaintext opaque refresh token
+     * @param rawRefreshToken raw refresh token
+     * @return {@code true} if a session was revoked, {@code false} if the token is unknown or its session
+     *         was already revoked
      */
-    void revoke(String rawRefreshToken);
+    boolean revoke(String rawRefreshToken);
 }

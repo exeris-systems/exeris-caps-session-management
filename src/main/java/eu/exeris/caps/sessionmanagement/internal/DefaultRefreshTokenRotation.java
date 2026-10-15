@@ -4,153 +4,152 @@ import eu.exeris.caps.sessionmanagement.api.ClientMetadata;
 import eu.exeris.caps.sessionmanagement.api.IssuedAccessToken;
 import eu.exeris.caps.sessionmanagement.api.IssuedRefreshToken;
 import eu.exeris.caps.sessionmanagement.api.RefreshTokenRotation;
-import eu.exeris.caps.sessionmanagement.api.RotationResult;
+import eu.exeris.caps.sessionmanagement.api.RotationOutcome;
 import eu.exeris.caps.sessionmanagement.api.SessionPolicy;
-import eu.exeris.caps.sessionmanagement.api.exception.InvalidRefreshTokenException;
-import eu.exeris.caps.sessionmanagement.api.exception.RefreshTokenReplayedException;
+import eu.exeris.caps.sessionmanagement.api.exception.SessionException;
 import eu.exeris.caps.sessionmanagement.api.exception.SessionExpiredException;
 import eu.exeris.caps.sessionmanagement.api.exception.SessionNotFoundException;
 import eu.exeris.caps.sessionmanagement.api.exception.SessionRevokedException;
 import eu.exeris.caps.sessionmanagement.internal.audit.SessionAuditBridge;
 import eu.exeris.caps.sessionmanagement.internal.crypto.TokenHasher;
+import eu.exeris.caps.sessionmanagement.internal.repository.FamilyRevocation;
+import eu.exeris.caps.sessionmanagement.internal.repository.IssueResult;
 import eu.exeris.caps.sessionmanagement.internal.repository.RefreshTokenRecord;
+import eu.exeris.caps.sessionmanagement.internal.repository.RevocationReason;
 import eu.exeris.caps.sessionmanagement.internal.repository.RotationExecutionResult;
-import eu.exeris.caps.sessionmanagement.internal.repository.SessionRecord;
 import eu.exeris.caps.sessionmanagement.internal.repository.SessionRepository;
 import eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Default implementation of {@link RefreshTokenRotation}.
+ * Default {@link RefreshTokenRotation}. The single-use decision is made by the repository's
+ * conditional write, never by a check in this class.
  *
  * @since 0.1.0
  */
 public final class DefaultRefreshTokenRotation implements RefreshTokenRotation {
 
+    private static final System.Logger LOG = System.getLogger(DefaultRefreshTokenRotation.class.getName());
+
     private final SessionRepository repository;
     private final SessionPolicy policy;
     private final AccessTokenIssuer accessTokenIssuer;
     private final SessionAuditBridge auditBridge;
+    private final Clock clock;
 
     public DefaultRefreshTokenRotation(
             SessionRepository repository,
             SessionPolicy policy,
             AccessTokenIssuer accessTokenIssuer,
-            SessionAuditBridge auditBridge
+            SessionAuditBridge auditBridge,
+            Clock clock
     ) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.policy = Objects.requireNonNull(policy, "policy must not be null");
         this.accessTokenIssuer = accessTokenIssuer;
         this.auditBridge = auditBridge;
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     @Override
     public IssuedRefreshToken issue(UUID sessionId, UUID subjectId) {
         Objects.requireNonNull(sessionId, "sessionId must not be null");
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        Instant now = Instant.now();
-
-        Optional<SessionRecord> sessionOpt = repository.findSession(sessionId);
-        if (sessionOpt.isEmpty()) {
-            throw new SessionNotFoundException(sessionId);
-        }
-        SessionRecord session = sessionOpt.get();
-        if (session.revokedAt() != null) {
-            throw new SessionRevokedException(sessionId);
-        }
-        if (session.isExpired(now)) {
-            throw new SessionExpiredException(sessionId);
-        }
-
-        TokenHasher.GeneratedToken tokenPair = TokenHasher.generate();
-        Instant expiresAt = now.plus(policy.refreshTokenTtl());
-        UUID tokenId = UUID.randomUUID();
-
+        Instant now = clock.instant();
+        TokenHasher.GeneratedToken generated = TokenHasher.generate();
         RefreshTokenRecord record = new RefreshTokenRecord(
-                tokenId,
-                sessionId,
-                tokenPair.tokenHash(),
-                now,
-                expiresAt,
-                null,
-                null
-        );
-        repository.saveRefreshToken(record);
+                UUID.randomUUID(), sessionId, generated.tokenHash(), now, now, null, null);
 
-        return new IssuedRefreshToken(tokenPair.rawToken(), expiresAt, sessionId);
-    }
-
-    @Override
-    public RotationResult rotate(String rawRefreshToken, ClientMetadata metadata) {
-        if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            throw new InvalidRefreshTokenException("rawRefreshToken must not be null or blank");
-        }
-        String oldTokenHash = TokenHasher.hash(rawRefreshToken);
-        TokenHasher.GeneratedToken freshToken = TokenHasher.generate();
-        Instant now = Instant.now();
-        Instant newExpiresAt = now.plus(policy.refreshTokenTtl());
-        UUID newTokenId = UUID.randomUUID();
-
-        RotationExecutionResult result = repository.executeRotation(
-                oldTokenHash,
-                newTokenId,
-                freshToken.tokenHash(),
-                newExpiresAt,
-                metadata,
-                now
-        );
-
-        return switch (result) {
-            case RotationExecutionResult.Success s -> {
-                if (auditBridge != null) {
-                    auditBridge.emitTokenRotated(s.session().id(), s.session().subjectId(), metadata);
-                }
-                IssuedAccessToken accessToken = accessTokenIssuer != null
-                        ? accessTokenIssuer.issueAccessToken(s.session().subjectId(), s.session().id())
-                        : null;
-                IssuedRefreshToken refreshToken = new IssuedRefreshToken(freshToken.rawToken(), newExpiresAt, s.session().id());
-                yield new RotationResult(s.session().subjectId(), s.session().id(), refreshToken, accessToken);
-            }
-            case RotationExecutionResult.ReplayDetected r -> {
-                if (auditBridge != null) {
-                    auditBridge.emitTokenReplayDetected(r.sessionId(), r.subjectId(), oldTokenHash);
-                }
-                throw new RefreshTokenReplayedException("Refresh token replay detected. Session has been revoked.", r.sessionId());
-            }
-            case RotationExecutionResult.TokenNotFound ignored ->
-                throw new InvalidRefreshTokenException("Refresh token not found");
-            case RotationExecutionResult.TokenRevoked ignored ->
-                throw new InvalidRefreshTokenException("Refresh token has been revoked");
-            case RotationExecutionResult.TokenExpired r ->
-                throw new SessionExpiredException("Refresh token has expired", r.sessionId());
-            case RotationExecutionResult.SessionNotFound r ->
-                throw new SessionNotFoundException(r.sessionId());
-            case RotationExecutionResult.SessionRevoked r ->
-                throw new SessionRevokedException(r.sessionId());
-            case RotationExecutionResult.SessionExpired r ->
-                throw new SessionExpiredException(r.sessionId());
-            case RotationExecutionResult.GraceWindow g -> {
-                if (auditBridge != null) {
-                    auditBridge.emitTokenRotated(g.session().id(), g.session().subjectId(), metadata);
-                }
-                IssuedAccessToken accessToken = accessTokenIssuer != null
-                        ? accessTokenIssuer.issueAccessToken(g.session().subjectId(), g.session().id())
-                        : null;
-                yield new RotationResult(g.session().subjectId(), g.session().id(), null, accessToken);
-            }
+        IssueResult result = repository.issueFirstToken(subjectId, record, now, policy.idleTimeout());
+        return switch (result.status()) {
+            case ISSUED -> new IssuedRefreshToken(generated.rawToken(), result.expiresAt(), sessionId);
+            case SESSION_NOT_FOUND -> throw new SessionNotFoundException(sessionId);
+            case SESSION_REVOKED -> throw new SessionRevokedException(sessionId);
+            case SESSION_EXPIRED -> throw new SessionExpiredException(sessionId);
+            case ALREADY_ISSUED -> throw new SessionException(
+                    "A refresh token was already issued for session " + sessionId + "; successors come from rotation");
         };
     }
 
     @Override
-    public void revoke(String rawRefreshToken) {
+    public RotationOutcome rotate(String rawRefreshToken, ClientMetadata metadata) {
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            return;
+            return new RotationOutcome.Rejected(RotationOutcome.Reason.UNKNOWN_TOKEN);
         }
-        String tokenHash = TokenHasher.hash(rawRefreshToken);
-        repository.revokeRefreshToken(tokenHash, Instant.now());
+        String presentedHash = TokenHasher.hash(rawRefreshToken);
+        TokenHasher.GeneratedToken successor = TokenHasher.generate();
+        Instant now = clock.instant();
+
+        RotationExecutionResult result = repository.rotate(
+                presentedHash, UUID.randomUUID(), successor.tokenHash(), metadata, now, policy.idleTimeout());
+
+        return switch (result) {
+            case RotationExecutionResult.Rotated(var session) -> {
+                if (auditBridge != null) {
+                    auditBridge.emitTokenRotated(session.id(), session.subjectId(), metadata);
+                }
+                Instant expiresAt = session.tokenExpiry(now, policy.idleTimeout());
+                IssuedAccessToken accessToken = issueAccessTokenAfterCommit(session.subjectId(), session.id());
+                yield new RotationOutcome.Rotated(
+                        session.subjectId(),
+                        session.id(),
+                        new IssuedRefreshToken(successor.rawToken(), expiresAt, session.id()),
+                        accessToken);
+            }
+            case RotationExecutionResult.ReuseDetected(var sessionId, var subjectId) -> {
+                if (auditBridge != null) {
+                    auditBridge.emitTokenReplayDetected(sessionId, subjectId, presentedHash);
+                }
+                yield new RotationOutcome.ReuseDetected(sessionId);
+            }
+            case RotationExecutionResult.ReplayRejected(var reason, var sessionId, var subjectId) -> {
+                if (auditBridge != null) {
+                    auditBridge.emitTokenReplayDetected(sessionId, subjectId, presentedHash);
+                }
+                yield new RotationOutcome.Rejected(reason);
+            }
+            case RotationExecutionResult.Rejected(var reason) -> new RotationOutcome.Rejected(reason);
+        };
+    }
+
+    /**
+     * Issues the access token once the rotation has committed. The presented token is consumed and its
+     * successor stored by then, so a failing issuer must not hide the successor from the caller: the
+     * caller's retry would present a consumed token and be treated as a replay. The failure is logged and
+     * the rotation reports no access token; the caller refreshes again with the successor to obtain one.
+     * The token is not issued before the commit because that would sign a token for a rotation that may
+     * still be refused or lose the race.
+     */
+    private IssuedAccessToken issueAccessTokenAfterCommit(UUID subjectId, UUID sessionId) {
+        if (accessTokenIssuer == null) {
+            return null;
+        }
+        try {
+            return accessTokenIssuer.issueAccessToken(subjectId, sessionId);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.ERROR,
+                    "access token was not issued for session " + sessionId + "; the refresh token was rotated", e);
+            return null;
+        }
+    }
+
+    @Override
+    public boolean revoke(String rawRefreshToken) {
+        if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
+            return false;
+        }
+        Optional<FamilyRevocation> revoked = repository.revokeFamilyByTokenHash(
+                TokenHasher.hash(rawRefreshToken), clock.instant(), RevocationReason.REFRESH_TOKEN_REVOKED);
+        revoked.ifPresent(r -> {
+            if (auditBridge != null) {
+                auditBridge.emitSessionRevoked(r.sessionId(), r.subjectId(), RevocationReason.REFRESH_TOKEN_REVOKED);
+            }
+        });
+        return revoked.isPresent();
     }
 }

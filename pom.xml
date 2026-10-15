@@ -11,7 +11,8 @@
     <name>Exeris Caps :: Session Management</name>
     <description>
         Layer 5 Domain Primitive capability providing session storage,
-        refresh token rotation, atomic replay attack detection, and session revocation.
+        single-use refresh token rotation with reuse detection, idle and absolute session lifetimes,
+        and subject-scoped session revocation.
     </description>
     <url>https://github.com/exeris-systems/exeris-caps-session-management</url>
     <inceptionYear>2026</inceptionYear>
@@ -40,6 +41,7 @@
 
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.7</assertj.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencies>
@@ -98,6 +100,18 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <version>42.7.14</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
