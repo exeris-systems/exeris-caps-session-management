@@ -1,93 +1,78 @@
 package eu.exeris.caps.sessionmanagement.api;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Layer 5 Domain Primitive contract for managing authenticated sessions.
+ * Sessions of a subject: one per sign-in (ADR-099).
  *
- * <p>Specified in ADR-099 for the Identity SKU ({@code exeris-sku-identity}).
+ * <p>Operations a signed-in user performs on their own sessions take a {@link SessionPrincipal}, which
+ * only the kernel's verified principal can produce, and act on that principal's subject alone. The two
+ * operations that take a bare subject identifier, {@link #createSession} and {@link #revokeAllForSubject},
+ * serve flows that have verified the subject by other means (a password, a reset token) and must never be
+ * fed an identifier taken from a request.
+ *
+ * <p>A session is active while it is not revoked, not past its absolute lifetime, and not idle under the
+ * {@link SessionPolicy}. Listings return active sessions only.
  *
  * @since 0.1.0
  */
 public interface SessionStore {
 
     /**
-     * Creates and persists a new authenticated session for the specified subject.
+     * Creates a session for a subject whose credentials the caller has just verified.
      *
-     * <p>If the subject has reached {@link SessionPolicy#maxActiveSessionsPerSubject()},
-     * the oldest active session is automatically evicted and revoked.
+     * <p>If the subject already holds {@link SessionPolicy#maxActiveSessionsPerSubject()} active sessions,
+     * the oldest are revoked so that the new one fits.
      *
-     * @param subjectId identity subject identifier
-     * @param metadata  client environment attributes (user-agent, IP)
-     * @return newly established session
+     * @param subjectId subject whose sign-in succeeded
+     * @param metadata  client environment attributes (user agent, IP)
+     * @return the new session
      */
     Session createSession(UUID subjectId, ClientMetadata metadata);
 
     /**
-     * Lists all non-expired, non-revoked sessions for the given subject.
+     * Lists the caller's active sessions, marking the one the caller authenticated with.
      *
-     * @param subjectId identity subject identifier
-     * @return list of active session info views
+     * @param principal the authenticated caller
+     * @return active sessions, oldest first
      */
-    List<SessionInfo> listActiveSessions(UUID subjectId);
+    List<SessionInfo> listSessions(SessionPrincipal principal);
 
     /**
-     * Lists active sessions for the subject, marking the current session.
+     * Revokes one of the caller's sessions and every refresh token issued for it.
      *
-     * @param subjectId        identity subject identifier
-     * @param currentSessionId current caller session identifier
-     * @return list of active session info views
+     * @param principal the authenticated caller
+     * @param sessionId session to revoke
+     * @return {@code true} if it was revoked; {@code false} if it does not exist, belongs to another
+     *         subject, or was already revoked — the three are indistinguishable to the caller
      */
-    default List<SessionInfo> listActiveSessions(UUID subjectId, UUID currentSessionId) {
-        return listActiveSessions(subjectId).stream()
-                .map(s -> new SessionInfo(
-                        s.id(),
-                        s.createdAt(),
-                        s.expiresAt(),
-                        s.lastActiveAt(),
-                        s.userAgent(),
-                        s.ipAddress(),
-                        s.id().equals(currentSessionId)
-                ))
-                .toList();
-    }
+    boolean revokeSession(SessionPrincipal principal, UUID sessionId);
 
     /**
-     * Finds session view info by session identifier.
+     * Revokes every session of the caller, the current one included.
      *
-     * @param sessionId session identifier
-     * @return session info if found
+     * @param principal the authenticated caller
+     * @return number of sessions revoked
      */
-    Optional<SessionInfo> findSession(UUID sessionId);
+    int revokeAllSessions(SessionPrincipal principal);
 
     /**
-     * Revokes a specific session belonging to the subject.
+     * Revokes the session the caller authenticated with and every refresh token issued for it.
      *
-     * @param subjectId identity subject identifier
-     * @param sessionId session identifier
-     * @return true if session was revoked, false if not found or already revoked
+     * @param principal the authenticated caller
+     * @return {@code true} if it was revoked, {@code false} if it was already revoked
+     * @throws IllegalStateException if the principal carries no session identifier
+     *         (see {@link SessionBoundPrincipal})
      */
-    boolean revokeSession(UUID subjectId, UUID sessionId);
+    boolean logout(SessionPrincipal principal);
 
     /**
-     * Revokes a specific session by its identifier.
+     * Revokes every session of a subject after a completed password change or reset (ADR-099
+     * obligation 9).
      *
-     * @param sessionId session identifier
-     * @return true if session was revoked, false if not found or already revoked
-     */
-    default boolean revokeSession(UUID sessionId) {
-        return revokeSession(null, sessionId);
-    }
-
-    /**
-     * Revokes all active sessions for the specified subject.
-     *
-     * <p>Typically invoked on password change or password reset (ADR-099 Obligation 9).
-     *
-     * @param subjectId identity subject identifier
-     * @return count of revoked sessions
+     * @param subjectId subject whose credential changed, as verified by the credential flow
+     * @return number of sessions revoked
      */
     int revokeAllForSubject(UUID subjectId);
 }

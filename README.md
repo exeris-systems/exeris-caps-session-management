@@ -1,6 +1,6 @@
 # exeris-caps-session-management
 
-Sign-in sessions and refresh tokens as an Exeris capability. It provides `SessionStore` (create a session, list a subject's active sessions, revoke one or all) and `RefreshTokenRotation` (opaque refresh tokens stored hashed, rotated on every use, with replay detection).
+Sign-in sessions and refresh tokens as an Exeris capability. It provides `SessionStore` (create a session; list, revoke one, revoke all and log out, each for the authenticated caller only) and `RefreshTokenRotation` (opaque single-use refresh tokens stored hashed, rotated on every use; presenting a consumed token to a live session revokes the whole session).
 
 Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API is not stable and no artefact has been published.
 
@@ -8,14 +8,18 @@ Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API
 
 - **Layer:** Layer 5 — Domain primitive (identity), in the Tier 2 capability map of [`high-level-architecture.md`](https://github.com/exeris-systems/exeris-docs/blob/main/high-level-architecture.md) §3.2.
 - **Depends on:** `exeris-kernel-spi`, `exeris-sdk-composition-lifecycle` and `exeris-caps-audit-trail`.
-- **Provides** (`@Provides`, all version 1.0.0): `SessionStore`, `RefreshTokenRotation`.
+- **Provides** (`@Provides`, all version 0.1.0): `SessionStore`, `RefreshTokenRotation`.
 - **Requires** (`@Requires`, each declared `optional = true`): `eu.exeris.kernel.spi.persistence.TransactionalExecutor`, `eu.exeris.caps.audittrail.api.AuditLogSink`, `eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer`.
 - **Wall (ADR-055):** `eu.exeris.caps.sessionmanagement.api` is the cross-cap surface; `eu.exeris.caps.sessionmanagement.internal` is private, and a sibling cap reaching into it fails the build. No Spring, servlet, Netty or reactive type may appear (ADR-006).
 
 Behaviour worth knowing before composing it:
 
-- Storage is in memory unless a kernel `TransactionalExecutor` is supplied, in which case a PostgreSQL repository is used. The DDL is `src/main/resources/schema/session-management-schema.sql`; nothing applies it automatically.
-- Issuing an access token on rotation goes through an interface this cap declares itself (`spi.AccessTokenIssuer`). The in-memory implementation in that package produces a placeholder token and is meant for tests.
+- **Refresh tokens are strictly single-use.** `rotate` consumes the presented token with one conditional `UPDATE ... WHERE consumed_at IS NULL` under a lock on the session row, so of any number of concurrent presentations exactly one returns `RotationOutcome.Rotated`. While the session is live, the first presentation of a consumed token returns `RotationOutcome.ReuseDetected` and revokes the session and every refresh token issued for it (ADR-099 obligation 9); later presentations return `RotationOutcome.Rejected(SESSION_REVOKED)`. A consumed token presented to a session that has already expired or gone idle returns `RotationOutcome.Rejected(SESSION_EXPIRED)` or `Rejected(SESSION_IDLE)`, is audited as `TOKEN_REPLAY_DETECTED` and revokes nothing, because the session no longer accepts any token. No interval exists in which a consumed token is accepted again; a client that refreshes from several tabs must serialise its refreshes.
+- **Sessions end on an absolute lifetime and an idle timeout** (`SessionPolicy`; defaults 7 days and 12 hours). Activity is a successful rotation. A refresh token never outlives the session's idle window or its absolute expiry, and a revoked, expired or idle session refuses refresh without consuming the token.
+- **Subject-scoped operations take a `SessionPrincipal`**, which only `SessionPrincipal.current()` produces, from the principal the kernel's security edge bound after verifying the access token. No constructor or factory accepts a subject identifier, so a route cannot act on a `subjectId` from a request body or query. `logout` needs the session identifier as well: the composition's `ClaimsMapper` returns a `SessionBoundPrincipal` carrying the token's `sid` claim. `createSession` and `revokeAllForSubject` take a bare subject because the sign-in and credential-change flows verify the subject themselves.
+- **Storage is PostgreSQL through the kernel `TransactionalExecutor`, and nothing else.** A module built without one has no services and refuses to initialize. The schema is `SessionManagementModule.MIGRATIONS`, classpath resources under `db/migration/exeris-caps-session-management/` (idempotent DDL, namespaced by artifactId); the composing SKU applies them, the capability does not.
+- **No tenant column and no row-level security.** ADR-099 obligation 10 keys session records by subject, and subjects are per deployment; tenant membership belongs to `multi-tenancy` and `rbac-policy`. Neither sign-in nor refresh carries a verified tenant to scope rows by. The tables belong in the identity deployment's own schema or database.
+- Issuing an access token on rotation goes through an interface this cap declares itself (`spi.AccessTokenIssuer`). With none wired, rotation returns no access token.
 
 ## Build & test
 
@@ -25,6 +29,8 @@ Requires JDK 25 and Maven 3.9+.
 mvn compile -Dexeris.codegen.skip=true   # pass 1 — the processor writes capability metadata
 mvn verify                               # pass 2 — generate cap-manifest.json, validate the graph, scan the Wall
 ```
+
+The PostgreSQL integration test (`PostgresSessionManagementIT`) starts `postgres:16` through Testcontainers and is skipped when no Docker daemon is reachable.
 
 Both passes are needed after a `clean`: `exeris:generate` runs before `compile`, and `compile` is when the processor writes the metadata it reads. `src/main/generated/java/cap-manifest.json` is committed, so a clean `git status` after `mvn verify` shows the manifest matches the declaration.
 

@@ -1,6 +1,7 @@
-package eu.exeris.caps.sessionmanagement.spi;
+package eu.exeris.caps.sessionmanagement;
 
 import eu.exeris.caps.sessionmanagement.api.IssuedAccessToken;
+import eu.exeris.caps.sessionmanagement.spi.AccessTokenIssuer;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -8,7 +9,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * In-memory test double implementation of {@link AccessTokenIssuer}.
+ * Test double for {@link AccessTokenIssuer}: returns an unsigned placeholder token.
  *
  * @since 0.1.0
  */

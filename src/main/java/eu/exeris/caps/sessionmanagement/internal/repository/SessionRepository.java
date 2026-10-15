@@ -2,93 +2,82 @@ package eu.exeris.caps.sessionmanagement.internal.repository;
 
 import eu.exeris.caps.sessionmanagement.api.ClientMetadata;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Persistence contract for sessions and refresh tokens.
+ * Persistence contract for sessions and their refresh-token families.
+ *
+ * <p>Every method is one transaction. Implementations take the session row before any of its refresh
+ * tokens, in every method, so that rotation and revocation of one family serialise instead of
+ * deadlocking. "Active" means not revoked, {@code expires_at > now} and
+ * {@code last_active_at > now - idleTimeout}.
  *
  * @since 0.1.0
  */
 public interface SessionRepository {
 
     /**
-     * Inserts a new session record.
-     */
-    void saveSession(SessionRecord session);
-
-    /**
-     * Finds a session by its unique identifier.
-     */
-    Optional<SessionRecord> findSession(UUID sessionId);
-
-    /**
-     * Finds all active (non-revoked, non-expired) sessions for a subject, ordered by creation time ascending.
-     */
-    List<SessionRecord> findActiveSessions(UUID subjectId, Instant now);
-
-    /**
-     * Explicitly revokes a session by session ID.
-     */
-    boolean revokeSession(UUID sessionId, Instant revokedAt);
-
-    /**
-     * Explicitly revokes a session by session ID and subject ID.
-     */
-    boolean revokeSession(UUID subjectId, UUID sessionId, Instant revokedAt);
-
-    /**
-     * Revokes all active sessions for a subject, returning the count of revoked sessions.
-     */
-    int revokeAllSessionsForSubject(UUID subjectId, Instant revokedAt);
-
-    /**
-     * Updates session last active timestamp and optionally client metadata.
-     */
-    void updateSessionActivity(UUID sessionId, Instant lastActiveAt, String userAgent, String ipAddress);
-
-    /**
-     * Saves a refresh token record.
-     */
-    void saveRefreshToken(RefreshTokenRecord token);
-
-    /**
-     * Finds a refresh token record by its SHA-256 hash.
-     */
-    Optional<RefreshTokenRecord> findRefreshTokenByHash(String tokenHash);
-
-    /**
-     * Explicitly revokes a refresh token by its hash.
-     */
-    boolean revokeRefreshToken(String tokenHash, Instant revokedAt);
-
-    /**
-     * Revokes all active refresh tokens for a session.
-     */
-    void revokeAllRefreshTokensForSession(UUID sessionId, Instant revokedAt);
-
-    /**
-     * Atomically executes refresh token rotation with single-use verification and replay detection.
+     * Inserts a session, first revoking the subject's oldest active sessions so that at most
+     * {@code maxActive} are active afterwards.
      *
-     * <p>In relational implementations, this executes inside a transaction with {@code SELECT FOR UPDATE}
-     * row locking to ensure strict serializability and immediate replay detection.
-     *
-     * @param oldTokenHash  hash of the token presented for rotation
-     * @param newTokenId    ID for the newly generated token
-     * @param newTokenHash  hash of the newly generated token
-     * @param newExpiresAt  expiry instant for the new token
-     * @param metadata      updated client metadata
-     * @param now           current transaction instant
-     * @return outcome of the rotation attempt
+     * @return identifiers of the sessions revoked to make room
      */
-    RotationExecutionResult executeRotation(
-            String oldTokenHash,
+    List<UUID> createSession(SessionRecord session, int maxActive, Duration idleTimeout);
+
+    /**
+     * The subject's active sessions, oldest first.
+     */
+    List<SessionRecord> findActiveSessions(UUID subjectId, Instant now, Duration idleTimeout);
+
+    /**
+     * Revokes one session of a subject and its refresh tokens.
+     *
+     * @return {@code false} if no unrevoked session with that identifier belongs to that subject
+     */
+    boolean revokeSession(UUID subjectId, UUID sessionId, Instant now, RevocationReason reason);
+
+    /**
+     * Revokes every unrevoked session of a subject and their refresh tokens.
+     *
+     * @return number of sessions revoked
+     */
+    int revokeAllSessions(UUID subjectId, Instant now, RevocationReason reason);
+
+    /**
+     * Stores the first refresh token of an active session of {@code subjectId}. The token's expiry is
+     * set to {@code min(now + idleTimeout, session.expires_at)}; {@code token.expiresAt()} is ignored.
+     */
+    IssueResult issueFirstToken(UUID subjectId, RefreshTokenRecord token, Instant now, Duration idleTimeout);
+
+    /**
+     * Rotates the refresh token whose hash is {@code presentedHash}.
+     *
+     * <p>Consumption is one conditional {@code UPDATE ... WHERE consumed_at IS NULL}, under a lock on
+     * the session row, so at most one transaction consumes a given token. A presented token that is
+     * already consumed revokes the session and all its tokens, and that revocation is committed. The
+     * session's revoked, absolute and idle state is checked before consumption, so a token of a session
+     * that has already ended is refused and consumes nothing.
+     *
+     * @param newTokenId   identifier of the successor token
+     * @param newTokenHash hash of the successor token
+     */
+    RotationExecutionResult rotate(
+            String presentedHash,
             UUID newTokenId,
             String newTokenHash,
-            Instant newExpiresAt,
             ClientMetadata metadata,
-            Instant now
+            Instant now,
+            Duration idleTimeout
     );
+
+    /**
+     * Revokes the session that the token with this hash belongs to, and all its tokens.
+     *
+     * @return the revoked family, or empty if the token is unknown or its session was already revoked
+     */
+    Optional<FamilyRevocation> revokeFamilyByTokenHash(String tokenHash, Instant now, RevocationReason reason);
 }
