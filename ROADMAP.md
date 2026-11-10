@@ -4,7 +4,7 @@ type: roadmap
 visibility: public
 owning-repo: exeris-caps-session-management
 status: active
-last-verified: 2026-10-15
+last-verified: 2026-11-10
 ---
 
 # `exeris-caps-session-management` roadmap
