@@ -1,5 +1,6 @@
 package eu.exeris.caps.sessionmanagement;
 
+import eu.exeris.kernel.spi.contract.EntitlementClass;
 import eu.exeris.kernel.spi.contract.EntitlementRequirement;
 import eu.exeris.kernel.tck.contract.AbstractEntitlementRequirementTck;
 import org.junit.jupiter.api.DisplayName;
@@ -34,5 +35,13 @@ class SessionManagementEntitlementTest extends AbstractEntitlementRequirementTck
     void requiresOnlyItsOwnCapability() {
         assertThat(new SessionManagementEntitlement().requiredCapabilities()).containsExactly("exeris-caps-session-management");
         assertThat(SessionManagementEntitlement.CAPABILITY_ID).isEqualTo("exeris-caps-session-management");
+    }
+
+    @Test
+    @DisplayName("entitlementClass() is COMMERCIAL and stable across calls")
+    void entitlementClassIsCommercialAndStable() {
+        SessionManagementEntitlement entitlement = new SessionManagementEntitlement();
+        assertThat(entitlement.entitlementClass()).isEqualTo(EntitlementClass.COMMERCIAL);
+        assertThat(entitlement.entitlementClass()).isSameAs(entitlement.entitlementClass());
     }
 }
